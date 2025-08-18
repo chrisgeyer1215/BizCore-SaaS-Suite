@@ -9,6 +9,11 @@ from django.utils.text import slugify
 
 class TenantBaseModel(models.Model):
     """Base model for all tenant-specific models"""
+    tenant = models.ForeignKey(
+        'core.Tenant',
+        on_delete=models.CASCADE,
+        related_name='%(app_label)s_%(class)s_set'
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

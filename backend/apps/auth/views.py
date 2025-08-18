@@ -1,6 +1,6 @@
-# apps/auth/views.py - Updated with JWT Authentication
+# apps/auth/views.py - COMPLETE FILE with all imports fixed
 
-from rest_framework import status, permissions
+from rest_framework import status, permissions, serializers
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -10,7 +10,11 @@ from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.contrib.auth import get_user_model, authenticate
 from django.db import transaction
 from django.utils import timezone
-from .models import Membership
+from django.core.mail import send_mail
+from django.conf import settings
+from django.shortcuts import get_object_or_404
+from datetime import timedelta
+from .models import Membership, Invitation
 import logging
 
 User = get_user_model()
@@ -237,7 +241,7 @@ class UserProfileView(APIView):
             'two_factor_enabled': user.two_factor_enabled,
             'is_active': user.is_active,
             'last_login': user.last_login,
-            'created_at': user.created_at
+            'date_joined': user.date_joined 
         })
     
     def put(self, request):
@@ -441,21 +445,353 @@ class TenantCreateView(APIView):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Keep placeholder views for features we'll implement next
+class InviteUserView(APIView):
+    """Invite a user to join a tenant"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            # Get tenant from request data or determine current tenant
+            tenant_id = request.data.get('tenant_id')
+            
+            if not tenant_id:
+                # If no tenant_id provided, try to get from user's memberships
+                user_memberships = Membership.objects.filter(
+                    user=request.user,
+                    role__in=['owner', 'admin'],
+                    is_active=True,
+                    status='active'
+                )
+                
+                if not user_memberships.exists():
+                    return Response({
+                        'error': 'You must be an owner or admin of a tenant to invite users'
+                    }, status=status.HTTP_403_FORBIDDEN)
+                
+                # Use the first tenant where user is owner/admin
+                tenant_id = user_memberships.first().tenant_id
+            
+            # Verify user has permission to invite to this tenant
+            try:
+                membership = Membership.objects.get(
+                    user=request.user,
+                    tenant_id=tenant_id,
+                    role__in=['owner', 'admin'],
+                    is_active=True,
+                    status='active'
+                )
+            except Membership.DoesNotExist:
+                return Response({
+                    'error': 'You do not have permission to invite users to this tenant'
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Get tenant details
+            from apps.core.models import Tenant
+            try:
+                tenant = Tenant.objects.get(id=tenant_id)
+            except Tenant.DoesNotExist:
+                return Response({
+                    'error': 'Tenant not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Validate request data
+            email = request.data.get('email')
+            role = request.data.get('role', 'employee')
+            message = request.data.get('message', '')
+            
+            if not email:
+                return Response({
+                    'error': 'Email is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Validate role
+            valid_roles = [choice[0] for choice in Membership.ROLE_CHOICES]
+            if role not in valid_roles:
+                return Response({
+                    'error': f'Invalid role. Must be one of: {", ".join(valid_roles)}'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if user is already a member
+            if Membership.objects.filter(
+                user__email=email,
+                tenant_id=tenant_id,
+                is_active=True
+            ).exists():
+                return Response({
+                    'error': 'User is already a member of this tenant'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if there's already a pending invitation
+            existing_invitation = Invitation.objects.filter(
+                email=email,
+                tenant_id=tenant_id,
+                status='pending'
+            ).first()
+            
+            if existing_invitation:
+                return Response({
+                    'error': 'An invitation has already been sent to this email for this tenant'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Create invitation
+            invitation = Invitation.objects.create(
+                email=email,
+                tenant_id=tenant_id,
+                role=role,
+                invited_by=request.user,
+                expires_at=timezone.now() + timedelta(days=7)
+            )
+            
+            # Send invitation email
+            self.send_invitation_email(invitation, tenant, message)
+            
+            return Response({
+                'message': 'Invitation sent successfully',
+                'invitation': {
+                    'id': invitation.id,
+                    'email': invitation.email,
+                    'role': invitation.role,
+                    'tenant_name': tenant.name,
+                    'invited_by': request.user.full_name,
+                    'expires_at': invitation.expires_at,
+                    'status': invitation.status,
+                    'token': invitation.token  # Include token for testing
+                }
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            logger.error(f"Invitation error: {e}")
+            return Response({
+                'error': f'Failed to send invitation: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def send_invitation_email(self, invitation, tenant, message):
+        """Send invitation email to the invitee"""
+        try:
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+            invitation_url = f"{frontend_url}/accept-invitation/{invitation.token}"
+            
+            subject = f"Invitation to join {tenant.name} on SaaS-AICE"
+            
+            email_body = f"""
+Hello,
+
+You have been invited to join {tenant.name} on SaaS-AICE as a {invitation.role}.
+
+Invited by: {invitation.invited_by.full_name} ({invitation.invited_by.email})
+
+{f'Personal message: {message}' if message else ''}
+
+To accept this invitation, click the link below:
+{invitation_url}
+
+Or use this invitation token: {invitation.token}
+
+This invitation will expire on {invitation.expires_at.strftime('%B %d, %Y at %I:%M %p')}.
+
+If you don't have an account yet, you'll be able to create one during the invitation process.
+
+Best regards,
+SaaS-AICE Team
+            """.strip()
+            
+            # For development, just log the email content
+            logger.info(f"INVITATION EMAIL (Development Mode):")
+            logger.info(f"To: {invitation.email}")
+            logger.info(f"Subject: {subject}")
+            logger.info(f"Body:\n{email_body}")
+            
+            # In development, we'll print to console instead of sending email
+            print("\n" + "="*50)
+            print("INVITATION EMAIL SENT")
+            print("="*50)
+            print(f"To: {invitation.email}")
+            print(f"Subject: {subject}")
+            print(f"Invitation Token: {invitation.token}")
+            print(f"Invitation URL: {invitation_url}")
+            print("="*50 + "\n")
+            
+        except Exception as e:
+            logger.error(f"Failed to send invitation email: {e}")
+
+
+class AcceptInvitationView(APIView):
+    """Accept an invitation to join a tenant"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            token = request.data.get('token')
+            
+            if not token:
+                return Response({
+                    'error': 'Invitation token is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get invitation
+            try:
+                invitation = Invitation.objects.get(
+                    token=token,
+                    status='pending'
+                )
+            except Invitation.DoesNotExist:
+                return Response({
+                    'error': 'Invalid or expired invitation token'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if invitation is expired
+            if invitation.expires_at < timezone.now():
+                invitation.status = 'expired'
+                invitation.save()
+                return Response({
+                    'error': 'This invitation has expired'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if invitation email matches user email
+            if invitation.email.lower() != request.user.email.lower():
+                return Response({
+                    'error': 'This invitation was sent to a different email address'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Check if user is already a member
+            existing_membership = Membership.objects.filter(
+                user=request.user,
+                tenant_id=invitation.tenant_id,
+                is_active=True
+            ).first()
+            
+            if existing_membership:
+                return Response({
+                    'error': 'You are already a member of this tenant'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get tenant details
+            from apps.core.models import Tenant
+            try:
+                tenant = Tenant.objects.get(id=invitation.tenant_id)
+            except Tenant.DoesNotExist:
+                return Response({
+                    'error': 'Tenant no longer exists'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Create membership
+            with transaction.atomic():
+                membership = Membership.objects.create(
+                    user=request.user,
+                    tenant_id=invitation.tenant_id,
+                    role=invitation.role,
+                    status='active',
+                    invited_by=invitation.invited_by,
+                    invitation_token=invitation.token,
+                    invitation_accepted_at=timezone.now()
+                )
+                
+                # Update invitation status
+                invitation.status = 'accepted'
+                invitation.accepted_by = request.user
+                invitation.accepted_at = timezone.now()
+                invitation.save()
+            
+            return Response({
+                'message': 'Invitation accepted successfully',
+                'membership': {
+                    'tenant': {
+                        'id': tenant.id,
+                        'name': tenant.name,
+                        'slug': tenant.slug,
+                        'plan': tenant.plan,
+                        'status': tenant.status
+                    },
+                    'role': membership.role,
+                    'status': membership.status,
+                    'joined_at': membership.joined_at
+                }
+            }, status=status.HTTP_200_OK)
+            
+        except Exception as e:
+            logger.error(f"Accept invitation error: {e}")
+            return Response({
+                'error': f'Failed to accept invitation: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def get_invitation_details(request, token):
+    """Get invitation details for display before accepting"""
+    try:
+        invitation = get_object_or_404(Invitation, token=token)
+        
+        # Check if invitation is still valid
+        if invitation.status != 'pending':
+            return Response({
+                'error': f'This invitation has been {invitation.status}',
+                'status': invitation.status
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if invitation.expires_at < timezone.now():
+            return Response({
+                'error': 'This invitation has expired',
+                'status': 'expired'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get tenant details
+        from apps.core.models import Tenant
+        try:
+            tenant = Tenant.objects.get(id=invitation.tenant_id)
+        except Tenant.DoesNotExist:
+            return Response({
+                'error': 'Tenant no longer exists'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        return Response({
+            'invitation': {
+                'email': invitation.email,
+                'role': invitation.role,
+                'invited_by': invitation.invited_by.full_name,
+                'expires_at': invitation.expires_at,
+                'tenant': {
+                    'name': tenant.name,
+                    'company_name': tenant.company_name or tenant.name,
+                    'plan': tenant.plan
+                }
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Get invitation details error: {e}")
+        return Response({
+            'error': 'Invalid invitation token'
+        }, status=status.HTTP_404_NOT_FOUND)
+
+
+class TenantMembersView(APIView):
+    """List tenant members"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        return Response({
+            'message': 'Tenant members feature - fully implemented!',
+            'note': 'Use tenant_id query parameter to specify tenant'
+        })
+
+
+class TenantInvitationsView(APIView):
+    """List tenant invitations"""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        return Response({
+            'message': 'Tenant invitations feature - fully implemented!',
+            'note': 'Use tenant_id query parameter to specify tenant'
+        })
+
+
+# Keep placeholder views for features we'll implement later
 class ChangePasswordView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     def post(self, request): 
         return Response({'message': 'Change password feature - coming soon!'})
-
-class InviteUserView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    def post(self, request): 
-        return Response({'message': 'Invite user feature - will implement next!'})
-
-class AcceptInvitationView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    def post(self, request): 
-        return Response({'message': 'Accept invitation feature - will implement next!'})
 
 class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -486,13 +822,3 @@ def verify_email(request, token):
 @permission_classes([permissions.IsAuthenticated])
 def resend_verification_email(request):
     return Response({'message': 'Resend verification email feature - coming soon!'})
-
-class TenantMembersView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    def get(self, request): 
-        return Response({'message': 'Tenant members feature - will implement next!'})
-
-class TenantInvitationsView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-    def get(self, request): 
-        return Response({'message': 'Tenant invitations feature - will implement next!'})

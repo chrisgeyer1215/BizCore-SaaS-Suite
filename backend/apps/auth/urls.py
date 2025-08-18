@@ -29,11 +29,12 @@ urlpatterns = [
     path('password-reset-request/', views.PasswordResetRequestView.as_view(), name='password_reset_request'),
     path('password-reset/', views.PasswordResetView.as_view(), name='password_reset'),
     
-    # Invitations (will implement next)
+    # Invitations
     path('invite-user/', views.InviteUserView.as_view(), name='invite_user'),
     path('accept-invitation/', views.AcceptInvitationView.as_view(), name='accept_invitation'),
+    path('invitation/<str:token>/', views.get_invitation_details, name='invitation_details'),
     
-    # Tenant Members & Invitations (will implement next)
+    # Tenant Members & Invitations
     path('members/', views.TenantMembersView.as_view(), name='tenant_members'),
     path('invitations/', views.TenantInvitationsView.as_view(), name='tenant_invitations'),
     

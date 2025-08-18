@@ -5,6 +5,18 @@ from .models import Tenant, Domain, TenantSettings, TenantUsage
 from apps.auth.models import Membership
 
 
+class TenantBaseSerializer(serializers.ModelSerializer):
+    """Base serializer for tenant-aware models"""
+    
+    class Meta:
+        abstract = True
+    
+    def create(self, validated_data):
+        # In a real implementation, you would set the tenant from request
+        # For now, just create normally
+        return super().create(validated_data)
+
+
 class DomainSerializer(serializers.ModelSerializer):
     """Serializer for Domain model"""
     

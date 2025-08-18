@@ -32,6 +32,22 @@ def health_check(request):
         }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
+# Tenant ViewSet Mixin
+class TenantViewSetMixin:
+    """Base mixin for tenant-aware ViewSets"""
+    
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # In a real implementation, you would filter by current tenant
+        # For now, return all records
+        return queryset
+    
+    def perform_create(self, serializer):
+        # In a real implementation, you would set the tenant from request
+        # For now, just save normally
+        serializer.save()
+
+
 # Placeholder views - we'll implement these properly later
 from rest_framework.views import APIView
 
