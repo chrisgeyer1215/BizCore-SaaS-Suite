@@ -59,7 +59,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'middlewares.tenant_middleware.TenantContextMiddleware',
 ]
 
 ROOT_URLCONF = 'config.urls'
@@ -82,15 +81,15 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'config.wsgi.application'
 
-# Database
+# database settings
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',  # Start with regular postgres
+        'ENGINE': 'django_tenants.postgresql_backend',
         'NAME': config('DB_NAME'),
         'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST'),
-        'PORT': config('DB_PORT', cast=int),
+        'PORT': config('DB_PORT', default='5432'),  # FIXED: Remove the cast=int and duplicate line
         'OPTIONS': {
             'sslmode': 'require',
             'connect_timeout': 10,
@@ -104,9 +103,12 @@ DATABASE_ROUTERS = (
     'django_tenants.routers.TenantSyncRouter',
 )
 
-# Tenant Model
-TENANT_MODEL = config('TENANT_MODEL', default='core.Tenant')
-TENANT_DOMAIN_MODEL = config('TENANT_DOMAIN_MODEL', default='core.Domain')
+# Tenant configuration  
+TENANT_MODEL = "core.Tenant"
+TENANT_DOMAIN_MODEL = "core.Domain"
+
+# Fix the tenant creation issue
+TENANT_CREATION_FAKES_MIGRATIONS = False
 
 # Public schema name
 PUBLIC_SCHEMA_NAME = 'public'
@@ -188,7 +190,13 @@ SIMPLE_JWT = {
 }
 
 # Custom User Model
-AUTH_USER_MODEL = 'auth.User'
+AUTH_USER_MODEL = 'custom_auth.User'
+
+# Authentication Backends
+AUTHENTICATION_BACKENDS = [
+    'apps.auth.backends.EmailAuthBackend',  # Our custom backend
+    'django.contrib.auth.backends.ModelBackend',  # Default backend
+]
 
 # CORS Configuration
 CORS_ALLOWED_ORIGINS = [

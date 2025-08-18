@@ -1,4 +1,4 @@
-# config/settings/dev.py
+# Add this to your config/settings/dev.py to disable Redis issues
 
 import sys
 from .base import *
@@ -9,11 +9,46 @@ DEBUG = True
 # Allowed hosts for development
 ALLOWED_HOSTS = ['*']
 
-# Database for development
+# Database for development - keep your working Neon config
 DATABASES['default'].update({
-    'HOST': config('DB_HOST', default='localhost'),
+    'HOST': config('DB_HOST'),
     'PORT': config('DB_PORT', default='5432'),
 })
+
+# DISABLE REDIS FOR DEVELOPMENT - This fixes admin login
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+    }
+}
+
+# Use database sessions instead of cache (fixes admin login)
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+
+# Disable Celery Redis dependency for development
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
+
+# Override any Redis URLs to avoid connection attempts
+CELERY_BROKER_URL = 'memory://'
+CELERY_RESULT_BACKEND = 'db+sqlite:///results.sqlite'
+
+# Add development tools
+INSTALLED_APPS += [
+    'django_extensions',
+    'debug_toolbar',
+]
+
+MIDDLEWARE = [
+    'debug_toolbar.middleware.DebugToolbarMiddleware',
+] + MIDDLEWARE
+
+# Debug toolbar configuration
+INTERNAL_IPS = [
+    '127.0.0.1',
+    'localhost',
+]
 
 # CORS settings for development
 CORS_ALLOWED_ORIGINS = [
@@ -37,22 +72,6 @@ CSRF_TRUSTED_ORIGINS = [
 # Email backend for development
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
-# Add development tools
-INSTALLED_APPS += [
-    'django_extensions',
-    'debug_toolbar',
-]
-
-MIDDLEWARE = [
-    'debug_toolbar.middleware.DebugToolbarMiddleware',
-] + MIDDLEWARE
-
-# Debug toolbar configuration
-INTERNAL_IPS = [
-    '127.0.0.1',
-    'localhost',
-]
-
 # Development-specific logging
 LOGGING['loggers'].update({
     'django_tenants': {
@@ -67,25 +86,6 @@ LOGGING['loggers'].update({
     },
 })
 
-# Celery settings for development
-CELERY_TASK_ALWAYS_EAGER = config('CELERY_ALWAYS_EAGER', default=False, cast=bool)
-CELERY_TASK_EAGER_PROPAGATES = True
-
-# Cache configuration for development
-CACHES = {
-    'default': {
-        'BACKEND': 'django_redis.cache.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://localhost:6379/1'),
-        'OPTIONS': {
-            'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-        }
-    }
-}
-
-# Session configuration
-SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
-SESSION_CACHE_ALIAS = 'default'
-
 # Development file uploads
 MEDIA_ROOT = BASE_DIR / 'media'
 MEDIA_URL = '/media/'
@@ -94,54 +94,4 @@ MEDIA_URL = '/media/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [
     BASE_DIR / 'static',
-]
-
-# JWT settings for development (shorter expiry for testing)
-SIMPLE_JWT.update({
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
-})
-
-# Development feature flags
-DEVELOPMENT_FEATURES = {
-    'ENABLE_SWAGGER': True,
-    'ENABLE_DEBUG_TOOLBAR': True,
-    'ENABLE_DJANGO_EXTENSIONS': True,
-    'SKIP_EMAIL_VERIFICATION': True,
-    'AUTO_VERIFY_DOMAINS': True,
-}
-
-# Spectacular settings for development
-SPECTACULAR_SETTINGS.update({
-    'SERVE_INCLUDE_SCHEMA': True,
-    'SWAGGER_UI_SETTINGS': {
-        'deepLinking': True,
-        'displayOperationId': True,
-        'defaultModelsExpandDepth': 2,
-        'defaultModelExpandDepth': 2,
-        'displayRequestDuration': True,
-        'docExpansion': 'none',
-        'filter': True,
-        'showExtensions': True,
-        'showCommonExtensions': True,
-    }
-})
-
-# Development console commands
-if 'shell_plus' in sys.argv:
-    SHELL_PLUS_IMPORTS = [
-        'from apps.auth.models import User, Membership, Invitation',
-        'from apps.core.models import Tenant, Domain, TenantSettings',
-        'from django.db import connection',
-        'from django_tenants.utils import get_tenant_model, get_tenant_domain_model',
-    ]
-
-# Development middleware order (debug toolbar first)
-if DEBUG and 'debug_toolbar' in INSTALLED_APPS:
-    MIDDLEWARE.insert(0, 'debug_toolbar.middleware.DebugToolbarMiddleware')
-
-# Tenant creation settings for development
-TENANT_CREATION_FAKES_MIGRATIONS = True
-
-# Auto-create demo data
-AUTO_CREATE_DEMO_TENANT = config('AUTO_CREATE_DEMO_TENANT', default=False, cast=bool)
+] if (BASE_DIR / 'static').exists() else []

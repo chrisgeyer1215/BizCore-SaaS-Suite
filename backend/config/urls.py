@@ -17,6 +17,7 @@ def api_root(request):
     return Response({
         'message': 'Welcome to SaaS-AICE API',
         'version': '1.0.0',
+        'status': 'operational',
         'documentation': {
             'swagger': request.build_absolute_uri('/api/docs/'),
             'redoc': request.build_absolute_uri('/api/redoc/'),
@@ -29,6 +30,12 @@ def api_root(request):
             'inventory': request.build_absolute_uri('/api/inventory/'),
             'ecommerce': request.build_absolute_uri('/api/ecommerce/'),
             'finance': request.build_absolute_uri('/api/finance/'),
+        },
+        'quick_start': {
+            'register': 'POST /api/auth/register/',
+            'login': 'POST /api/auth/login/',
+            'create_tenant': 'POST /api/auth/create-tenant/',
+            'health_check': 'GET /api/tenants/health/'
         }
     })
 
