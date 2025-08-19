@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Order Has Shipped - #{{ order.order_number }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 20px;
+            margin-bottom: 30px;
+        }
+        .shipping-info {
+            background-color: #e8f5e8;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            border-left: 4px solid #28a745;
+        }
+        .tracking-info {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .tracking-button {
+            display: inline-block;
+            background-color: #007bff;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 5px;
+            margin-top: 15px;
+        }
+        .tracking-button:hover {
+            background-color: #0056b3;
+        }
+        .order-summary {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .items-list {
+            list-style: none;
+            padding: 0;
+        }
+        .items-list li {
+            padding: 10px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .items-list li:last-child {
+            border-bottom: none;
+        }
+        .shipping-address {
+            background-color: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+        .footer {
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }
+        .status-icon {
+            color: #28a745;
+            font-size: 24px;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📦 Your Order Has Shipped!</h1>
+        <h2>Order #{{ order.order_number }}</h2>
+        <p>Great news! Your order is on its way to you.</p>
+    </div>
+
+    <div class="shipping-info">
+        <h3><span class="status-icon">✅</span>Shipment Details</h3>
+        <p><strong>Shipped Date:</strong> {{ order.shipped_date|date:"F j, Y g:i A" }}</p>
+        <p><strong>Shipping Method:</strong> {{ order.shipping_method|default:"Standard Shipping" }}</p>
+        {% if order.shipping_carrier %}
+        <p><strong>Carrier:</strong> {{ order.shipping_carrier }}</p>
+        {% endif %}
+        {% if order.tracking_number %}
+        <p><strong>Tracking Number:</strong> {{ order.tracking_number }}</p>
+        {% endif %}
+    </div>
+
+    {% if order.tracking_url or order.tracking_number %}
+    <div class="tracking-info">
+        <h3>Track Your Package</h3>
+        <p>You can track your package's progress using the information below:</p>
+        
+        {% if order.tracking_url %}
+        <a href="{{ order.tracking_url }}" class="tracking-button" target="_blank">
+            Track Your Package
+        </a>
+        {% elif order.tracking_number %}
+        <p><strong>Tracking Number:</strong> {{ order.tracking_number }}</p>
+        <p>Please visit your carrier's website to track your package using this number.</p>
+        {% endif %}
+        
+        <p><small>Please allow up to 24 hours for tracking information to become available.</small></p>
+    </div>
+    {% endif %}
+
+    <div class="shipping-address">
+        <h3>Shipping Address</h3>
+        <p>
+            {{ order.shipping_address.first_name }} {{ order.shipping_address.last_name }}<br>
+            {% if order.shipping_address.company %}
+            {{ order.shipping_address.company }}<br>
+            {% endif %}
+            {{ order.shipping_address.address1 }}<br>
+            {% if order.shipping_address.address2 %}
+            {{ order.shipping_address.address2 }}<br>
+            {% endif %}
+            {{ order.shipping_address.city }}, {{ order.shipping_address.state }} {{ order.shipping_address.postal_code }}<br>
+            {{ order.shipping_address.country }}
+        </p>
+    </div>
+
+    <div class="order-summary">
+        <h3>Order Summary</h3>
+        <p><strong>Order Date:</strong> {{ order.order_date|date:"F j, Y" }}</p>
+        <p><strong>Total:</strong> ${{ order.total_amount }}</p>
+        
+        <h4>Items Shipped:</h4>
+        <ul class="items-list">
+            {% for item in order.items.all %}
+            <li>
+                <strong>{{ item.title }}</strong>
+                {% if item.variant_title %} - {{ item.variant_title }}{% endif %}
+                <br>
+                <small>Quantity: {{ item.quantity }} | Price: ${{ item.price }}</small>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; padding: 20px; margin-bottom: 30px;">
+        <h3>📋 Delivery Information</h3>
+        <ul>
+            <li><strong>Estimated Delivery:</strong> 
+                {% if order.shipping_method.estimated_delivery_days_min and order.shipping_method.estimated_delivery_days_max %}
+                {{ order.shipped_date|date:"F j"|add_days:order.shipping_method.estimated_delivery_days_min }} - 
+                {{ order.shipped_date|date:"F j"|add_days:order.shipping_method.estimated_delivery_days_max }}
+                {% else %}
+                3-7 business days
+                {% endif %}
+            </li>
+            <li>Someone 18 years or older must be available to receive the package</li>
+            <li>If you're not available, the carrier will leave a note with pickup instructions</li>
+            <li>For questions about delivery, contact the shipping carrier directly</li>
+        </ul>
+    </div>
+
+    <div style="background-color: #d4edda; border: 1px solid #c3e6cb; border-radius: 8px; padding: 20px; margin-bottom: 30px;">
+        <h3>📞 Need Help?</h3>
+        <p>If you have any questions about your order or shipment:</p>
+        <ul>
+            <li><strong>Email:</strong> support@yourstore.com</li>
+            <li><strong>Phone:</strong> 1-800-123-4567</li>
+            <li><strong>Order Number:</strong> {{ order.order_number }}</li>
+        </ul>
+        <p>Please have your order number ready when contacting us.</p>
+    </div>
+
+    <div class="footer">
+        <p>Thank you for shopping with us!</p>
+        <p>We hope you love your purchase. Don't forget to leave a review once you've received your items.</p>
+        <p><small>This email was sent to {{ order.customer_email }}</small></p>
+    </div>
+</body>
+</html>

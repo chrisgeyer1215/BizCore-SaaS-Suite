@@ -65,3 +65,8 @@ vine==5.1.0
 wcwidth==0.2.13
 wheel==0.45.1
 whitenoise==6.6.0
+python-barcode>=0.14.0
+qrcode>=7.4.0   
+django-storages>=1.13.0 
+stripe>=5.5.0               
+paypal-rest-sdk>=1.13.1

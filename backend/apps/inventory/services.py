@@ -244,9 +244,11 @@ class ReservationService:
         self.tenant = tenant
     
     @transaction.atomic
-    def create_reservation(self, products user=None):
+    def create_reservation(self, products, reservation_data=None, user=None):
         """Create stock reservation for multiple products"""
         try:
+            if reservation_data is None:
+                reservation_data = {}
             # Create reservation header
             reservation = StockReservation.objects.create(
                 tenant=self.tenant,
@@ -262,7 +264,8 @@ class ReservationService:
             )
             
             reservation_items = []
-            faileproduct_id = item_data['product_id']
+            for item_data in products:
+                product_id = item_data['product_id']
                 quantity = Decimal(str(item_data['quantity']))
                 warehouse_id = item_data.get('warehouse_id')
                 
@@ -342,7 +345,7 @@ class ReservationService:
             return False, str(e)
     
     @transaction.atomic
-    def fulfill_reservation(self, reservation_i[Dict], user=None):
+    def fulfill_reservation(self, reservation_id, fulfillment_items, user=None):
         """Fulfill stock reservation"""
         try:
             reservation = StockReservation.objects.get(id=reservation_id, tenant=self.tenant)
@@ -352,7 +355,8 @@ class ReservationService:
             
             fulfilled_items = []
             
-            _item_id = item_data['reservation_item_id']
+            for item_data in fulfillment_items:
+                reservation_item_id = item_data['reservation_item_id']
                 fulfill_qty = Decimal(str(item_data['quantity']))
                 
                 try:

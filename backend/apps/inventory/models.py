@@ -180,8 +180,11 @@ class UnitOfMeasure(TenantBaseModel):
         db_table = 'inventory_units'
         ordering = ['unit_type', 'name']
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'abbreviation'], name='unique_tenant_uom_abbrev'),
-            models.UniqueConstraint(fields=['tenant', 'name'], name='unique_tenant_uom_name'),
+            models.UniqueConstraint(fields=['tenant_id', 'abbreviation'], name='unique_tenant_uom_abbrev'),
+            models.UniqueConstraint(fields=['tenant_id', 'name'], name='unique_tenant_uom_name'),
+        ]
+        indexes = [
+            models.Index(fields=['tenant_id', 'unit_type', 'is_active']),
         ]
         indexes = [
             models.Index(fields=['tenant', 'unit_type', 'is_active']),
@@ -248,12 +251,12 @@ class Department(TenantBaseModel, SoftDeleteMixin):
         db_table = 'inventory_departments'
         ordering = ['sort_order', 'name']
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'code'], name='unique_tenant_dept_code'),
+            models.UniqueConstraint(fields=['tenant_id', 'code'], name='unique_tenant_dept_code'),
         ]
         indexes = [
-            models.Index(fields=['tenant', 'code']),
-            models.Index(fields=['tenant', 'is_active']),
-            models.Index(fields=['tenant', 'parent']),
+            models.Index(fields=['tenant_id', 'code']),
+            models.Index(fields=['tenant_id', 'is_active']),
+            models.Index(fields=['tenant_id', 'parent']),
         ]
     
     def __str__(self):
@@ -313,11 +316,11 @@ class Category(TenantBaseModel, SoftDeleteMixin):
         db_table = 'inventory_categories'
         ordering = ['department', 'sort_order', 'name']
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'department', 'code'], name='unique_tenant_cat_code'),
+            models.UniqueConstraint(fields=['tenant_id', 'department', 'code'], name='unique_tenant_cat_code'),
         ]
         indexes = [
-            models.Index(fields=['tenant', 'department', 'is_active']),
-            models.Index(fields=['tenant', 'parent']),
+            models.Index(fields=['tenant_id', 'department', 'is_active']),
+            models.Index(fields=['tenant_id', 'parent']),
         ]
         verbose_name_plural = 'Categories'
     
@@ -359,10 +362,10 @@ class SubCategory(TenantBaseModel, SoftDeleteMixin):
         db_table = 'inventory_subcategories'
         ordering = ['category', 'sort_order', 'name']
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'category', 'code'], name='unique_tenant_subcat_code'),
+            models.UniqueConstraint(fields=['tenant_id', 'category', 'code'], name='unique_tenant_subcat_code'),
         ]
         indexes = [
-            models.Index(fields=['tenant', 'category', 'is_active']),
+            models.Index(fields=['tenant_id', 'category', 'is_active']),
         ]
         verbose_name_plural = 'Sub Categories'
     
@@ -829,12 +832,11 @@ class StockLocation(TenantBaseModel):
     class Meta:
         db_table = 'inventory_stock_locations'
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'warehouse', 'code'], name='unique_tenant_location_code'),
+            models.UniqueConstraint(fields=['tenant_id', 'warehouse', 'code'], name='unique_tenant_location_code'),
         ]
-        ordering = ['warehouse', 'zone', 'aisle', 'rack', 'shelf', 'bin']
         indexes = [
-            models.Index(fields=['tenant', 'warehouse', 'is_active']),
-            models.Index(fields=['tenant', 'warehouse', 'location_type']),
+            models.Index(fields=['tenant_id', 'warehouse', 'is_active']),
+            models.Index(fields=['tenant_id', 'warehouse', 'location_type']),
         ]
     
     def __str__(self):
@@ -917,12 +919,11 @@ class ProductAttribute(TenantBaseModel):
     class Meta:
         db_table = 'inventory_product_attributes'
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'slug'], name='unique_tenant_attribute_slug'),
+            models.UniqueConstraint(fields=['tenant_id', 'slug'], name='unique_tenant_attribute_slug'),
         ]
-        ordering = ['attribute_group', 'sort_order', 'name']
         indexes = [
-            models.Index(fields=['tenant', 'is_active']),
-            models.Index(fields=['tenant', 'attribute_type']),
+            models.Index(fields=['tenant_id', 'is_active']),
+            models.Index(fields=['tenant_id', 'attribute_type']),
         ]
     
     def __str__(self):
@@ -3892,13 +3893,13 @@ class StockReservation(TenantBaseModel):
     class Meta:
         db_table = 'inventory_stock_reservations'
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'reservation_number'], name='unique_tenant_reservation_number'),
+            models.UniqueConstraint(fields=['tenant_id', 'reservation_number'], name='unique_tenant_reservation_number'),
         ]
         ordering = ['-reservation_date']
         indexes = [
-            models.Index(fields=['tenant', 'status', 'expiry_date']),
-            models.Index(fields=['tenant', 'reservation_type', 'status']),
-            models.Index(fields=['tenant', 'reference_type', 'reference_id']),
+            models.Index(fields=['tenant_id', 'status', 'expiry_date']),
+            models.Index(fields=['tenant_id', 'reservation_type', 'status']),
+            models.Index(fields=['tenant_id', 'reference_type', 'reference_id']),
         ]
     
     def __str__(self):
@@ -4420,12 +4421,11 @@ class VendorManagedInventory(TenantBaseModel):
     class Meta:
         db_table = 'inventory_vendor_managed_inventory'
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'vmi_number'], name='unique_tenant_vmi_number'),
+            models.UniqueConstraint(fields=['tenant_id', 'vmi_number'], name='unique_tenant_vmi_number'),
         ]
-        ordering = ['-start_date']
         indexes = [
-            models.Index(fields=['tenant', 'supplier', 'status']),
-            models.Index(fields=['tenant', 'warehouse', 'status']),
+            models.Index(fields=['tenant_id', 'supplier', 'status']),
+            models.Index(fields=['tenant_id', 'warehouse', 'status']),
         ]
     
     def __str__(self):
@@ -4486,11 +4486,11 @@ class VMIProduct(TenantBaseModel):
     class Meta:
         db_table = 'inventory_vmi_products'
         constraints = [
-            models.UniqueConstraint(fields=['tenant', 'vmi_agreement', 'product'], name='unique_vmi_product'),
+            models.UniqueConstraint(fields=['tenant_id', 'vmi_agreement', 'product'], name='unique_vmi_product'),
         ]
         indexes = [
-            models.Index(fields=['tenant', 'vmi_agreement', 'is_active']),
-            models.Index(fields=['tenant', 'product', 'is_active']),
+            models.Index(fields=['tenant_id', 'vmi_agreement', 'is_active']),
+            models.Index(fields=['tenant_id', 'product', 'is_active']),
         ]
     
     def __str__(self):

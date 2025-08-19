@@ -1,11 +1,8 @@
 from django.core.management.base import BaseCommand
-from django.contrib.auth import get_user_model
-from apps.tenants.models import Tenant, Domain
-
-User = get_user_model()
+from tenants.models import Tenant, Domain  # Notice: tenants.models, not apps.tenants.models
 
 class Command(BaseCommand):
-    help = 'Create development tenant with sample data'
+    help = 'Create development tenant'
     
     def handle(self, *args, **options):
         # Create tenant
@@ -19,7 +16,11 @@ class Command(BaseCommand):
         
         if created:
             self.stdout.write(
-                self.style.SUCCESS(f'Created tenant: {tenant.name}')
+                self.style.SUCCESS(f'✅ Created tenant: {tenant.name}')
+            )
+        else:
+            self.stdout.write(
+                self.style.WARNING(f'⚠️ Tenant already exists: {tenant.name}')
             )
         
         # Create domain
@@ -33,12 +34,14 @@ class Command(BaseCommand):
         
         if created:
             self.stdout.write(
-                self.style.SUCCESS(f'Created domain: {domain.domain}')
+                self.style.SUCCESS(f'✅ Created domain: {domain.domain}')
+            )
+        else:
+            self.stdout.write(
+                self.style.WARNING(f'⚠️ Domain already exists: {domain.domain}')
             )
         
         self.stdout.write(
-            self.style.SUCCESS('Setup complete!')
+            self.style.SUCCESS('🎯 Setup complete!')
         )
-        self.stdout.write('Add to your hosts file:')
-        self.stdout.write('127.0.0.1 dev.localhost')
-        self.stdout.write('Then access: http://dev.localhost:8000/admin/')
+        self.stdout.write('Now you can access: http://dev.localhost:8000/admin/')

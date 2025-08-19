@@ -119,9 +119,18 @@ class InventorySettingsAdmin(TenantAdminMixin, admin.ModelAdmin):
     
     def has_add_permission(self, request):
         # Only allow one settings record per tenant
-        return not InventorySettings.objects.filter(tenant=request.tenant).exists()
-
-
+        try:
+            if hasattr(request, 'tenant') and request.tenant:
+                return not InventorySettings.objects.filter(tenant=request.tenant).exists()
+            else:
+                return True 
+        except Exception as e:
+            # Log the error and allow creation
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error checking InventorySettings permission: {str(e)}")
+            return True
+    
 @admin.register(UnitOfMeasure)
 class UnitOfMeasureAdmin(TenantAdminMixin, admin.ModelAdmin):
     list_display = ('name', 'abbreviation', 'symbol', 'unit_type', 'base_unit', 'is_active')
