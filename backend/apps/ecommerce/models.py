@@ -1,5 +1,6 @@
 from django.db import models
 from django.contrib.auth import get_user_model
+from django.contrib.postgres.search import SearchVector, SearchVectorField
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -8,6 +9,7 @@ from decimal import Decimal
 import uuid
 import random
 import string
+import logging
 from enum import TextChoices
 
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
@@ -15,6 +17,145 @@ from apps.inventory.models import Product, ProductVariation, Warehouse, StockIte
 from apps.crm.models import Customer
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# CUSTOM MANAGERS & QUERYSETS
+# ============================================================================
+
+class PublishedProductManager(models.Manager):
+    """Manager for published products only"""
+    
+    def get_queryset(self):
+        return super().get_queryset().filter(
+            is_active=True,
+            is_published=True,
+            status='PUBLISHED'
+        )
+    
+    def in_stock(self):
+        """Products that are in stock"""
+        return self.filter(
+            models.Q(track_quantity=False) | 
+            models.Q(stock_quantity__gt=0) |
+            models.Q(continue_selling_when_out_of_stock=True)
+        )
+    
+    def by_collection(self, collection_slug):
+        """Products in a specific collection"""
+        return self.filter(collections__slug=collection_slug)
+    
+    def by_price_range(self, min_price, max_price):
+        """Products within price range"""
+        return self.filter(price__range=[min_price, max_price])
+    
+    def featured(self):
+        """Featured products"""
+        return self.filter(is_featured=True)
+    
+    def best_sellers(self, limit=10):
+        """Best selling products"""
+        return self.filter(sales_count__gt=0).order_by('-sales_count')[:limit]
+    
+    def new_arrivals(self, days=30):
+        """New arrivals within specified days"""
+        cutoff_date = timezone.now() - timezone.timedelta(days=days)
+        return self.filter(created_at__gte=cutoff_date).order_by('-created_at')
+    
+    def with_analytics(self):
+        """Products with analytics data"""
+        return self.select_related('analytics')
+    
+    def optimized(self):
+        """Optimized queryset with common relations"""
+        return self.select_related(
+            'inventory_product',
+            'primary_collection',
+            'analytics'
+        ).prefetch_related(
+            'variants',
+            'collections',
+            'reviews__customer'
+        )
+
+
+class OrderQuerySet(models.QuerySet):
+    """Custom queryset for orders"""
+    
+    def pending(self):
+        return self.filter(status='PENDING')
+    
+    def confirmed(self):
+        return self.filter(status='CONFIRMED')
+    
+    def processing(self):
+        return self.filter(status='PROCESSING')
+    
+    def completed(self):
+        return self.filter(status__in=['COMPLETED', 'DELIVERED'])
+    
+    def paid(self):
+        return self.filter(payment_status='PAID')
+    
+    def unpaid(self):
+        return self.filter(payment_status__in=['PENDING', 'FAILED'])
+    
+    def by_date_range(self, start_date, end_date):
+        return self.filter(order_date__range=[start_date, end_date])
+    
+    def by_customer(self, customer):
+        return self.filter(customer=customer)
+    
+    def recent(self, days=30):
+        cutoff_date = timezone.now() - timezone.timedelta(days=days)
+        return self.filter(order_date__gte=cutoff_date)
+    
+    def with_items(self):
+        return self.prefetch_related('items__product', 'items__variant')
+
+
+class OrderManager(models.Manager):
+    """Custom manager for orders"""
+    
+    def get_queryset(self):
+        return OrderQuerySet(self.model, using=self._db)
+    
+    def pending(self):
+        return self.get_queryset().pending()
+    
+    def confirmed(self):
+        return self.get_queryset().confirmed()
+    
+    def completed(self):
+        return self.get_queryset().completed()
+    
+    def paid(self):
+        return self.get_queryset().paid()
+    
+    def recent(self, days=30):
+        return self.get_queryset().recent(days)
+
+
+class CartManager(models.Manager):
+    """Custom manager for carts"""
+    
+    def active(self):
+        return self.filter(status='ACTIVE')
+    
+    def abandoned(self):
+        return self.filter(status='ABANDONED')
+    
+    def for_customer(self, customer):
+        return self.filter(customer=customer)
+    
+    def for_session(self, session_id):
+        return self.filter(session_id=session_id)
+    
+    def expired(self):
+        return self.filter(
+            expires_at__lt=timezone.now(),
+            status='ACTIVE'
+        )
 
 
 # ============================================================================
@@ -56,6 +197,8 @@ class EcommerceSettings(TenantBaseModel):
         AUD = 'AUD', 'Australian Dollar'
         INR = 'INR', 'Indian Rupee'
         BDT = 'BDT', 'Bangladeshi Taka'
+        JPY = 'JPY', 'Japanese Yen'
+        CNY = 'CNY', 'Chinese Yuan'
     
     # Store Information
     store_name = models.CharField(max_length=255)
@@ -202,6 +345,15 @@ class EcommerceSettings(TenantBaseModel):
     
     def __str__(self):
         return f'{self.store_name} Settings'
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.free_shipping_threshold and self.free_shipping_threshold < 0:
+            raise ValidationError({
+                'free_shipping_threshold': 'Free shipping threshold cannot be negative'
+            })
 
 
 # ============================================================================
@@ -283,6 +435,7 @@ class Collection(TenantBaseModel, SoftDeleteMixin):
     seo_title = models.CharField(max_length=255, blank=True)
     seo_description = models.TextField(blank=True)
     seo_keywords = models.TextField(blank=True)
+    canonical_url = models.URLField(blank=True)
     
     # Performance (Cached)
     products_count = models.PositiveIntegerField(default=0)
@@ -295,6 +448,7 @@ class Collection(TenantBaseModel, SoftDeleteMixin):
             models.Index(fields=['tenant', 'is_visible', 'is_featured']),
             models.Index(fields=['tenant', 'collection_type']),
             models.Index(fields=['tenant', 'parent']),
+            models.Index(fields=['tenant', 'slug']),
         ]
     
     def __str__(self):
@@ -304,6 +458,22 @@ class Collection(TenantBaseModel, SoftDeleteMixin):
         if not self.slug:
             self.slug = slugify(self.title)
         super().save(*args, **kwargs)
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        # Prevent self-reference
+        if self.parent_id and self.parent_id == self.id:
+            raise ValidationError({'parent': 'Collection cannot be its own parent'})
+        
+        # Prevent circular references
+        if self.parent_id:
+            current = self.parent
+            while current:
+                if current.id == self.id:
+                    raise ValidationError({'parent': 'Circular reference detected'})
+                current = current.parent
     
     def get_full_path(self):
         """Get full collection path"""
@@ -322,6 +492,10 @@ class Collection(TenantBaseModel, SoftDeleteMixin):
             is_published=True,
             status='PUBLISHED'
         ).count()
+    
+    def get_absolute_url(self):
+        """Get collection URL"""
+        return f'/collections/{self.slug}/'
 
 
 class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
@@ -339,6 +513,8 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
         GROUPED = 'GROUPED', 'Grouped Product'
         DIGITAL = 'DIGITAL', 'Digital Product'
         SUBSCRIPTION = 'SUBSCRIPTION', 'Subscription Product'
+        BUNDLE = 'BUNDLE', 'Bundle Product'
+        GIFT_CARD = 'GIFT_CARD', 'Gift Card'
     
     class Visibility(TextChoices):
         VISIBLE = 'VISIBLE', 'Catalog & Search'
@@ -346,14 +522,12 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
         SEARCH = 'SEARCH', 'Search Only'
         HIDDEN = 'HIDDEN', 'Hidden'
         PASSWORD_PROTECTED = 'PASSWORD_PROTECTED', 'Password Protected'
-    
     # Core Product Integration
     inventory_product = models.OneToOneField(
         Product, 
         on_delete=models.CASCADE, 
         related_name='ecommerce_product'
     )
-    
     # E-commerce Basic Information
     title = models.CharField(max_length=255, help_text="Display title for e-commerce")
     slug = models.SlugField(max_length=255)
@@ -398,7 +572,8 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
     price = models.DecimalField(
         max_digits=10, 
         decimal_places=2, 
-        help_text="Primary selling price"
+        help_text="Primary selling price",
+        validators=[MinValueValidator(Decimal('0.01'))]
     )
     compare_at_price = models.DecimalField(
         max_digits=10, 
@@ -439,6 +614,8 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
     stock_quantity = models.PositiveIntegerField(default=0)  # Cached from inventory
     low_stock_threshold = models.PositiveIntegerField(default=0)
     allow_backorders = models.BooleanField(default=False)
+    reorder_point = models.PositiveIntegerField(default=0)
+    reorder_quantity = models.PositiveIntegerField(default=0)
     
     # Shipping & Physical Properties
     requires_shipping = models.BooleanField(default=True)
@@ -460,11 +637,17 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
     
     # Product Variants Support
     has_variants = models.BooleanField(default=False)
+    cached_variants_count = models.PositiveIntegerField(default=0)
+    cached_lowest_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    cached_highest_price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     
     # Additional E-commerce Fields
     vendor = models.CharField(max_length=255, blank=True)
     brand = models.CharField(max_length=255, blank=True)
     tags = models.JSONField(default=list, blank=True)
+    search_tags = models.JSONField(default=list, blank=True)
+    auto_tags = models.JSONField(default=list, blank=True)
+    specifications = models.JSONField(default=dict, blank=True)
     
     # Images
     featured_image = models.ImageField(upload_to='products/ecommerce/', blank=True)
@@ -478,6 +661,13 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
     seo_title = models.CharField(max_length=255, blank=True)
     seo_description = models.TextField(blank=True)
     seo_keywords = models.TextField(blank=True)
+    canonical_url = models.URLField(blank=True)
+    og_title = models.CharField(max_length=255, blank=True)
+    og_description = models.TextField(blank=True)
+    og_image = models.ImageField(upload_to='products/og/', blank=True)
+    
+    # Search Enhancement (PostgreSQL)
+    search_vector = SearchVectorField(null=True, blank=True)
     
     # Status & Visibility
     is_active = models.BooleanField(default=True)
@@ -496,9 +686,14 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
     average_rating = models.DecimalField(
         max_digits=3,
         decimal_places=2,
-        default=Decimal('0.00')
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('5'))]
     )
     review_count = models.PositiveIntegerField(default=0)
+    
+    # Custom Managers
+    objects = models.Manager()
+    published = PublishedProductManager()
     
     class Meta:
         db_table = 'ecommerce_product'
@@ -508,12 +703,18 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
         ]
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['tenant', 'status', 'is_published']),
+            models.Index(fields=['tenant', 'status', 'is_published', 'is_active']),
             models.Index(fields=['tenant', 'visibility', 'is_featured']),
             models.Index(fields=['tenant', 'product_type']),
             models.Index(fields=['tenant', 'vendor']),
             models.Index(fields=['tenant', 'brand']),
             models.Index(fields=['tenant', 'is_active']),
+            models.Index(fields=['tenant', 'price', 'is_published']),
+            models.Index(fields=['tenant', 'created_at', 'is_published']),
+            models.Index(fields=['tenant', 'sales_count', 'is_published']),
+            models.Index(fields=['tenant', 'average_rating', 'is_published']),
+            models.Index(fields=['tenant', 'slug']),
+            models.Index(fields=['tenant', 'url_handle']),
         ]
     
     def __str__(self):
@@ -542,7 +743,53 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
         elif not self.is_published:
             self.published_at = None
         
+        # Update search vector if PostgreSQL
+        self.update_search_vector()
+        
         super().save(*args, **kwargs)
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        # Price validation
+        if self.compare_at_price and self.compare_at_price <= self.price:
+            raise ValidationError({
+                'compare_at_price': 'Compare at price must be higher than selling price'
+            })
+        
+        # Sale price validation
+        if self.sale_price and self.sale_price >= self.price:
+            raise ValidationError({
+                'sale_price': 'Sale price must be lower than regular price'
+            })
+        
+        # Date validation
+        if (self.sale_price_start and self.sale_price_end and 
+            self.sale_price_start >= self.sale_price_end):
+            raise ValidationError({
+                'sale_price_end': 'Sale end date must be after start date'
+            })
+        
+        # Weight validation for shipping
+        if self.requires_shipping and not self.weight:
+            raise ValidationError({
+                'weight': 'Weight is required for products that need shipping'
+            })
+    
+    def update_search_vector(self):
+        """Update search vector for full-text search"""
+        try:
+            self.search_vector = (
+                SearchVector('title', weight='A') +
+                SearchVector('description', weight='B') +
+                SearchVector('short_description', weight='B') +
+                SearchVector('brand', weight='C') +
+                SearchVector('vendor', weight='C')
+            )
+        except:
+            # Fallback if PostgreSQL is not available
+            pass
     
     @property
     def name(self):
@@ -603,6 +850,44 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
             return True
         return self.available_inventory > 0 or self.continue_selling_when_out_of_stock
     
+    def get_absolute_url(self):
+        """Get product URL"""
+        return f'/products/{self.url_handle}/'
+    
+    def get_primary_image(self):
+        """Get primary product image"""
+        if self.featured_image:
+            return self.featured_image.url
+        if self.gallery_images:
+            return self.gallery_images[0]
+        return None
+    
+    def get_price_range(self):
+        """Get price range for variable products"""
+        if not self.has_variants:
+            return {'min': self.current_price, 'max': self.current_price}
+        
+        variants = self.variants.filter(is_active=True)
+        prices = [v.effective_price for v in variants]
+        
+        return {
+            'min': min(prices) if prices else self.current_price,
+            'max': max(prices) if prices else self.current_price
+        }
+    
+    def can_purchase(self, quantity=1):
+        """Check if product can be purchased"""
+        if not self.is_active or not self.is_published:
+            return False, "Product is not available"
+        
+        if not self.is_in_stock:
+            return False, "Product is out of stock"
+        
+        if self.track_quantity and self.available_inventory < quantity:
+            return False, f"Only {self.available_inventory} items available"
+        
+        return True, "Can purchase"
+    
     def get_stock_quantity(self):
         """Get actual stock quantity from inventory"""
         if not self.track_quantity:
@@ -616,6 +901,23 @@ class EcommerceProduct(TenantBaseModel, SoftDeleteMixin):
             )['total'] or 0
         
         return self.stock_quantity
+    
+    def update_cached_data(self):
+        """Update cached product data"""
+        if self.has_variants:
+            variants = self.variants.filter(is_active=True)
+            self.cached_variants_count = variants.count()
+            
+            if variants.exists():
+                prices = [v.effective_price for v in variants]
+                self.cached_lowest_price = min(prices)
+                self.cached_highest_price = max(prices)
+        
+        self.save(update_fields=[
+            'cached_variants_count', 
+            'cached_lowest_price', 
+            'cached_highest_price'
+        ])
 
 
 class ProductVariant(TenantBaseModel, SoftDeleteMixin):
@@ -660,7 +962,7 @@ class ProductVariant(TenantBaseModel, SoftDeleteMixin):
     )
     
     # Physical Properties
-    weight = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
+    weight = models.DecimalField(max_digits=8, decimal_places=3, blank=True, null=True)
     length = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
     width = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
     height = models.DecimalField(max_digits=8, decimal_places=2, blank=True, null=True)
@@ -682,6 +984,16 @@ class ProductVariant(TenantBaseModel, SoftDeleteMixin):
     
     def __str__(self):
         return f"{self.ecommerce_product.title} - {self.title}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        # Price validation
+        if self.compare_at_price and self.price and self.compare_at_price <= self.price:
+            raise ValidationError({
+                'compare_at_price': 'Compare at price must be higher than selling price'
+            })
     
     @property
     def effective_price(self):
@@ -729,6 +1041,10 @@ class CollectionProduct(TenantBaseModel):
         db_table = 'ecommerce_collection_product'
         unique_together = [('tenant', 'collection', 'product')]
         ordering = ['position']
+        indexes = [
+            models.Index(fields=['tenant', 'collection', 'position']),
+            models.Index(fields=['tenant', 'product']),
+        ]
 
 
 # ============================================================================
@@ -786,6 +1102,9 @@ class Cart(TenantBaseModel):
     # Additional Information
     notes = models.TextField(blank=True)
     
+    # Custom Manager
+    objects = CartManager()
+    
     class Meta:
         db_table = 'ecommerce_cart'
         indexes = [
@@ -793,12 +1112,20 @@ class Cart(TenantBaseModel):
             models.Index(fields=['tenant', 'session_id']),
             models.Index(fields=['tenant', 'status']),
             models.Index(fields=['cart_id']),
+            models.Index(fields=['tenant', 'expires_at']),
         ]
     
     def __str__(self):
         if self.customer:
             return f"Cart - {self.customer.name}"
         return f"Cart - {self.session_id or self.cart_id}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.expires_at and self.expires_at <= timezone.now():
+            raise ValidationError({'expires_at': 'Expiry date must be in the future'})
     
     @property
     def item_count(self):
@@ -810,17 +1137,26 @@ class Cart(TenantBaseModel):
         """Number of unique items in cart"""
         return self.items.count()
     
+    @property
+    def is_expired(self):
+        """Check if cart is expired"""
+        return self.expires_at and timezone.now() > self.expires_at
+    
     def calculate_totals(self):
         """Calculate cart totals"""
         items = self.items.select_related('product', 'variant')
         self.subtotal = sum(item.line_total for item in items)
         
         # Tax calculation based on settings
-        settings = EcommerceSettings.objects.filter(tenant=self.tenant).first()
-        if settings and settings.default_tax_rate:
-            if settings.tax_calculation == 'EXCLUSIVE':
-                self.tax_amount = self.subtotal * (settings.default_tax_rate / 100)
-            # For inclusive, tax is already included in prices
+        try:
+            settings = EcommerceSettings.objects.filter(tenant=self.tenant).first()
+            if settings and settings.default_tax_rate:
+                if settings.tax_calculation == 'EXCLUSIVE':
+                    self.tax_amount = self.subtotal * (settings.default_tax_rate / 100)
+                # For inclusive, tax is already included in prices
+        except Exception as e:
+            logger.warning(f"Error calculating tax for cart {self.cart_id}: {e}")
+            self.tax_amount = Decimal('0.00')
         
         # Total calculation
         self.total_amount = self.subtotal + self.tax_amount + self.shipping_amount - self.discount_amount
@@ -830,26 +1166,30 @@ class Cart(TenantBaseModel):
     
     def add_item(self, product, variant=None, quantity=1, custom_attributes=None):
         """Add item to cart"""
-        price = variant.effective_price if variant else product.current_price
-        
-        cart_item, created = CartItem.objects.get_or_create(
-            cart=self,
-            product=product,
-            variant=variant,
-            defaults={
-                'tenant': self.tenant,
-                'quantity': quantity,
-                'unit_price': price,
-                'custom_attributes': custom_attributes or {}
-            }
-        )
-        
-        if not created:
-            cart_item.quantity += quantity
-            cart_item.save(update_fields=['quantity'])
-        
-        self.calculate_totals()
-        return cart_item
+        try:
+            price = variant.effective_price if variant else product.current_price
+            
+            cart_item, created = CartItem.objects.get_or_create(
+                cart=self,
+                product=product,
+                variant=variant,
+                defaults={
+                    'tenant': self.tenant,
+                    'quantity': quantity,
+                    'unit_price': price,
+                    'custom_attributes': custom_attributes or {}
+                }
+            )
+            
+            if not created:
+                cart_item.quantity += quantity
+                cart_item.save(update_fields=['quantity'])
+            
+            self.calculate_totals()
+            return cart_item, None
+        except Exception as e:
+            logger.error(f"Error adding item to cart {self.cart_id}: {e}")
+            return None, str(e)
     
     def update_item_quantity(self, item_id, quantity):
         """Update item quantity"""
@@ -861,9 +1201,12 @@ class Cart(TenantBaseModel):
                 item.quantity = quantity
                 item.save(update_fields=['quantity'])
             self.calculate_totals()
-            return True
+            return True, None
         except CartItem.DoesNotExist:
-            return False
+            return False, "Item not found in cart"
+        except Exception as e:
+            logger.error(f"Error updating item quantity in cart {self.cart_id}: {e}")
+            return False, str(e)
     
     def remove_item(self, item_id):
         """Remove item from cart"""
@@ -871,14 +1214,22 @@ class Cart(TenantBaseModel):
             item = self.items.get(id=item_id)
             item.delete()
             self.calculate_totals()
-            return True
+            return True, None
         except CartItem.DoesNotExist:
-            return False
+            return False, "Item not found in cart"
+        except Exception as e:
+            logger.error(f"Error removing item from cart {self.cart_id}: {e}")
+            return False, str(e)
     
     def clear(self):
         """Clear all items from cart"""
-        self.items.all().delete()
-        self.calculate_totals()
+        try:
+            self.items.all().delete()
+            self.calculate_totals()
+            return True, None
+        except Exception as e:
+            logger.error(f"Error clearing cart {self.cart_id}: {e}")
+            return False, str(e)
 
 
 class CartItem(TenantBaseModel):
@@ -917,6 +1268,13 @@ class CartItem(TenantBaseModel):
         variant_info = f" - {self.variant.title}" if self.variant else ""
         return f"{self.product.title}{variant_info} x {self.quantity}"
     
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.quantity <= 0:
+            raise ValidationError({'quantity': 'Quantity must be greater than 0'})
+    
     @property
     def line_total(self):
         """Calculate line total for this item"""
@@ -944,9 +1302,27 @@ class Wishlist(TenantBaseModel):
     class Meta:
         db_table = 'ecommerce_wishlist'
         unique_together = [('tenant', 'customer', 'name')]
+        indexes = [
+            models.Index(fields=['tenant', 'customer']),
+        ]
     
     def __str__(self):
         return f"{self.customer.name} - {self.name}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        # Ensure only one default wishlist per customer
+        if self.is_default:
+            existing_default = Wishlist.objects.filter(
+                tenant=self.tenant,
+                customer=self.customer,
+                is_default=True
+            ).exclude(pk=self.pk)
+            
+            if existing_default.exists():
+                raise ValidationError({'is_default': 'Customer can have only one default wishlist'})
     
     @property
     def items_count(self):
@@ -976,6 +1352,10 @@ class WishlistItem(TenantBaseModel):
         db_table = 'ecommerce_wishlist_item'
         unique_together = [('tenant', 'wishlist', 'product', 'variant')]
         ordering = ['-priority', '-added_at']
+        indexes = [
+            models.Index(fields=['tenant', 'wishlist']),
+            models.Index(fields=['tenant', 'product']),
+        ]
     
     def __str__(self):
         variant_info = f" - {self.variant.title}" if self.variant else ""
@@ -1146,6 +1526,9 @@ class Order(TenantBaseModel, SoftDeleteMixin):
     # Integration References
     inventory_invoice_id = models.PositiveIntegerField(null=True, blank=True)
     
+    # Custom Manager
+    objects = OrderManager()
+    
     class Meta:
         db_table = 'ecommerce_order'
         indexes = [
@@ -1155,6 +1538,7 @@ class Order(TenantBaseModel, SoftDeleteMixin):
             models.Index(fields=['tenant', 'payment_status']),
             models.Index(fields=['order_number']),
             models.Index(fields=['customer_email']),
+            models.Index(fields=['tenant', 'order_date', 'status']),
         ]
         ordering = ['-order_date']
     
@@ -1165,6 +1549,19 @@ class Order(TenantBaseModel, SoftDeleteMixin):
         if not self.order_number:
             self.order_number = self.generate_order_number()
         super().save(*args, **kwargs)
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        # Financial validation
+        if self.subtotal < 0 or self.total_amount < 0:
+            raise ValidationError('Order amounts cannot be negative')
+        
+        # Status transition validation
+        if self.pk and self.status == 'CANCELLED':
+            if not self.can_be_cancelled():
+                raise ValidationError('Order cannot be cancelled in current state')
     
     def generate_order_number(self):
         """Generate unique order number"""
@@ -1198,15 +1595,57 @@ class Order(TenantBaseModel, SoftDeleteMixin):
         """Total number of items in order"""
         return sum(item.quantity for item in self.items.all())
     
+    def can_be_cancelled(self):
+        """Enhanced cancellation check"""
+        if self.status in ['CANCELLED', 'COMPLETED', 'DELIVERED']:
+            return False
+        
+        if self.payment_status == 'PAID' and self.fulfillment_status not in ['UNFULFILLED', 'PARTIAL']:
+            return False
+        
+        return True
+    
     @property
     def can_cancel(self):
         """Check if order can be cancelled"""
-        return self.status in ['PENDING', 'CONFIRMED'] and self.payment_status != 'PAID'
+        return self.can_be_cancelled()
     
     @property
     def can_refund(self):
         """Check if order can be refunded"""
         return self.payment_status == 'PAID' and self.status not in ['CANCELLED', 'REFUNDED']
+    
+    def get_cancellation_refund_amount(self):
+        """Calculate refund amount for cancellation"""
+        if not self.can_be_cancelled():
+            return Decimal('0.00')
+        
+        if self.payment_status == 'PAID':
+            return self.total_amount
+        
+        return Decimal('0.00')
+    
+    def get_tracking_info(self):
+        """Get formatted tracking information"""
+        if self.tracking_number and self.shipping_carrier:
+            return {
+                'carrier': self.shipping_carrier,
+                'tracking_number': self.tracking_number,
+                'tracking_url': self.tracking_url or self.generate_tracking_url()
+            }
+        return None
+    
+    def generate_tracking_url(self):
+        """Generate tracking URL based on carrier"""
+        carrier_urls = {
+            'ups': f'https://www.ups.com/track?tracknum={self.tracking_number}',
+            'fedex': f'https://www.fedex.com/apps/fedextrack/?tracknumbers={self.tracking_number}',
+            'usps': f'https://tools.usps.com/go/TrackConfirmAction_input?qtc_tLabels1={self.tracking_number}',
+            'dhl': f'https://www.dhl.com/en/express/tracking.html?AWB={self.tracking_number}',
+        }
+        
+        carrier_key = self.shipping_carrier.lower()
+        return carrier_urls.get(carrier_key, '')
     
     def get_items_count(self):
         """Get total items in order"""
@@ -1284,6 +1723,18 @@ class OrderItem(TenantBaseModel):
         self.total_price = (self.quantity * self.unit_price) - self.discount_amount
         super().save(*args, **kwargs)
     
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.quantity <= 0:
+            raise ValidationError({'quantity': 'Quantity must be greater than 0'})
+        
+        if self.quantity_fulfilled > self.quantity:
+            raise ValidationError({
+                'quantity_fulfilled': 'Fulfilled quantity cannot exceed ordered quantity'
+            })
+    
     @property
     def unfulfilled_quantity(self):
         """Get unfulfilled quantity"""
@@ -1346,10 +1797,23 @@ class PaymentSession(TenantBaseModel):
         indexes = [
             models.Index(fields=['tenant', 'session_id']),
             models.Index(fields=['tenant', 'status']),
+            models.Index(fields=['expires_at']),
         ]
     
     def __str__(self):
         return f'Payment Session {self.session_id}'
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.amount <= 0:
+            raise ValidationError({'amount': 'Payment amount must be greater than 0'})
+    
+    @property
+    def is_expired(self):
+        """Check if payment session is expired"""
+        return timezone.now() > self.expires_at
 
 
 class PaymentTransaction(TenantBaseModel):
@@ -1380,8 +1844,7 @@ class PaymentTransaction(TenantBaseModel):
         SUCCESS = 'SUCCESS', 'Success'
         FAILED = 'FAILED', 'Failed'
         CANCELLED = 'CANCELLED', 'Cancelled'
-        EXPIRED = 'EXPIRED', 'Expired'
-    
+        EXPIRED = 'EXPIRED', 'Expired'   
     # Transaction Identification
     transaction_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     external_transaction_id = models.CharField(max_length=255, blank=True)
@@ -1446,11 +1909,19 @@ class PaymentTransaction(TenantBaseModel):
             models.Index(fields=['tenant', 'transaction_type']),
             models.Index(fields=['external_transaction_id']),
             models.Index(fields=['gateway_transaction_id']),
+            models.Index(fields=['transaction_id']),
         ]
         ordering = ['-created_at']
     
     def __str__(self):
         return f"{self.transaction_type.title()} - {self.amount} {self.currency}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.amount <= 0:
+            raise ValidationError({'amount': 'Transaction amount must be greater than 0'})
 
 
 # ============================================================================
@@ -1465,6 +1936,7 @@ class Discount(TenantBaseModel, SoftDeleteMixin):
         FIXED_AMOUNT = 'FIXED_AMOUNT', 'Fixed Amount'
         FREE_SHIPPING = 'FREE_SHIPPING', 'Free Shipping'
         BUY_X_GET_Y = 'BUY_X_GET_Y', 'Buy X Get Y'
+        BOGO = 'BOGO', 'Buy One Get One'
     
     class AppliesTo(TextChoices):
         ALL = 'ALL', 'All Products'
@@ -1548,6 +2020,25 @@ class Discount(TenantBaseModel, SoftDeleteMixin):
     
     def __str__(self):
         return f"{self.title} ({self.code})"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.discount_type == 'PERCENTAGE' and self.value > 100:
+            raise ValidationError({
+                'value': 'Percentage discount cannot exceed 100%'
+            })
+        
+        if self.value <= 0:
+            raise ValidationError({
+                'value': 'Discount value must be greater than 0'
+            })
+        
+        if self.valid_until and self.valid_from >= self.valid_until:
+            raise ValidationError({
+                'valid_until': 'End date must be after start date'
+            })
     
     @property
     def is_valid(self):
@@ -1685,9 +2176,19 @@ class ShippingZone(TenantBaseModel, SoftDeleteMixin):
     class Meta:
         db_table = 'ecommerce_shipping_zone'
         ordering = ['sort_order', 'name']
+        indexes = [
+            models.Index(fields=['tenant', 'is_active']),
+        ]
     
     def __str__(self):
         return self.name
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if not self.countries:
+            raise ValidationError({'countries': 'At least one country must be specified'})
 
 
 class ShippingMethod(TenantBaseModel, SoftDeleteMixin):
@@ -1729,9 +2230,25 @@ class ShippingMethod(TenantBaseModel, SoftDeleteMixin):
     class Meta:
         db_table = 'ecommerce_shipping_method'
         ordering = ['shipping_zone', 'sort_order', 'name']
+        indexes = [
+            models.Index(fields=['tenant', 'shipping_zone', 'is_active']),
+        ]
     
     def __str__(self):
         return f"{self.shipping_zone.name} - {self.name}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.base_rate < 0:
+            raise ValidationError({'base_rate': 'Base rate cannot be negative'})
+        
+        if self.minimum_order_amount and self.maximum_order_amount:
+            if self.minimum_order_amount >= self.maximum_order_amount:
+                raise ValidationError({
+                    'maximum_order_amount': 'Maximum amount must be greater than minimum amount'
+                })
     
     def calculate_rate(self, order_total, weight):
         """Calculate shipping rate for given order total and weight"""
@@ -1832,10 +2349,18 @@ class ProductReview(TenantBaseModel, SoftDeleteMixin):
             models.Index(fields=['tenant', 'customer']),
             models.Index(fields=['rating']),
             models.Index(fields=['is_verified_purchase']),
+            models.Index(fields=['status', 'created_at']),
         ]
     
     def __str__(self):
         return f'Review for {self.product.title} by {self.customer.name}'
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if not (1 <= self.rating <= 5):
+            raise ValidationError({'rating': 'Rating must be between 1 and 5'})
     
     @property
     def helpfulness_percentage(self):
@@ -1877,6 +2402,7 @@ class ProductQuestion(TenantBaseModel, SoftDeleteMixin):
         indexes = [
             models.Index(fields=['tenant', 'product', 'is_public']),
             models.Index(fields=['is_answered']),
+            models.Index(fields=['tenant', 'customer']),
         ]
         ordering = ['-created_at']
     
@@ -1923,10 +2449,29 @@ class CustomerAddress(TenantBaseModel, SoftDeleteMixin):
         db_table = 'ecommerce_customer_address'
         indexes = [
             models.Index(fields=['tenant', 'customer']),
+            models.Index(fields=['tenant', 'customer', 'is_default']),
         ]
     
     def __str__(self):
         return f'{self.first_name} {self.last_name} - {self.city}, {self.state}'
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        # Ensure only one default address per customer per type
+        if self.is_default:
+            existing_defaults = CustomerAddress.objects.filter(
+                tenant=self.tenant,
+                customer=self.customer,
+                type=self.type,
+                is_default=True
+            ).exclude(pk=self.pk)
+            
+            if existing_defaults.exists():
+                raise ValidationError({
+                    'is_default': f'Customer can have only one default {self.type.lower()} address'
+                })
     
     def get_full_address(self):
         """Get formatted full address"""
@@ -1948,7 +2493,12 @@ class CustomerGroup(TenantBaseModel, SoftDeleteMixin):
     description = models.TextField(blank=True)
     
     # Group Benefits
-    discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0.00'))
+    discount_percentage = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))]
+    )
     free_shipping_threshold = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
     
     # Automatic Assignment Rules
@@ -1966,9 +2516,21 @@ class CustomerGroup(TenantBaseModel, SoftDeleteMixin):
     
     class Meta:
         db_table = 'ecommerce_customer_group'
+        indexes = [
+            models.Index(fields=['tenant', 'is_active']),
+        ]
     
     def __str__(self):
         return self.name
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.discount_percentage < 0 or self.discount_percentage > 100:
+            raise ValidationError({
+                'discount_percentage': 'Discount percentage must be between 0 and 100'
+            })
 
 
 # ============================================================================
@@ -1986,8 +2548,16 @@ class GiftCard(TenantBaseModel):
     
     # Gift Card Information
     code = models.CharField(max_length=50, unique=True)
-    initial_value = models.DecimalField(max_digits=10, decimal_places=2)
-    current_balance = models.DecimalField(max_digits=10, decimal_places=2)
+    initial_value = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
+    )
+    current_balance = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.00'))]
+    )
     currency = models.CharField(max_length=3, default='USD')
     
     # Status and Dates
@@ -2028,6 +2598,7 @@ class GiftCard(TenantBaseModel):
             models.Index(fields=['tenant', 'code']),
             models.Index(fields=['tenant', 'status']),
             models.Index(fields=['recipient_email']),
+            models.Index(fields=['expiry_date']),
         ]
     
     def __str__(self):
@@ -2036,16 +2607,32 @@ class GiftCard(TenantBaseModel):
     def save(self, *args, **kwargs):
         if not self.code:
             self.code = self.generate_gift_card_code()
-        if not self.current_balance:
+        if not self.current_balance and self.initial_value:
             self.current_balance = self.initial_value
         super().save(*args, **kwargs)
     
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.current_balance > self.initial_value:
+            raise ValidationError({
+                'current_balance': 'Current balance cannot exceed initial value'
+            })
+        
+        if self.expiry_date and self.expiry_date <= timezone.now():
+            raise ValidationError({
+                'expiry_date': 'Expiry date must be in the future'
+            })
+    
     def generate_gift_card_code(self):
         """Generate unique gift card code"""
-        while True:
+        max_attempts = 10
+        for _ in range(max_attempts):
             code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=12))
             if not GiftCard.objects.filter(code=code).exists():
                 return code
+        raise ValidationError("Unable to generate unique gift card code")
     
     @property
     def is_expired(self):
@@ -2081,7 +2668,11 @@ class GiftCardTransaction(TenantBaseModel):
     
     # Transaction Details
     transaction_type = models.CharField(max_length=20, choices=TransactionType.choices)
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    amount = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
+    )
     balance_before = models.DecimalField(max_digits=10, decimal_places=2)
     balance_after = models.DecimalField(max_digits=10, decimal_places=2)
     
@@ -2092,9 +2683,20 @@ class GiftCardTransaction(TenantBaseModel):
     class Meta:
         db_table = 'ecommerce_gift_card_transaction'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['tenant', 'gift_card']),
+            models.Index(fields=['tenant', 'order']),
+        ]
     
     def __str__(self):
         return f"{self.gift_card.code} - {self.transaction_type} ${self.amount}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.amount <= 0:
+            raise ValidationError({'amount': 'Transaction amount must be greater than 0'})
 
 
 # ============================================================================
@@ -2116,15 +2718,19 @@ class SubscriptionPlan(TenantBaseModel, SoftDeleteMixin):
     description = models.TextField(blank=True)
     
     # Pricing
-    price = models.DecimalField(max_digits=10, decimal_places=2)
+    price = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))]
+    )
     setup_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     
     # Billing Configuration
     billing_interval = models.CharField(max_length=20, choices=BillingInterval.choices)
-    billing_interval_count = models.IntegerField(default=1)
+    billing_interval_count = models.IntegerField(default=1, validators=[MinValueValidator(1)])
     
     # Trial Period
-    trial_period_days = models.IntegerField(default=0)
+    trial_period_days = models.IntegerField(default=0, validators=[MinValueValidator(0)])
     
     # Plan Features
     features = models.JSONField(default=list, blank=True)
@@ -2136,9 +2742,21 @@ class SubscriptionPlan(TenantBaseModel, SoftDeleteMixin):
     
     class Meta:
         db_table = 'ecommerce_subscription_plan'
+        indexes = [
+            models.Index(fields=['tenant', 'is_active']),
+        ]
     
     def __str__(self):
         return f"{self.name} - ${self.price}/{self.billing_interval}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.billing_interval_count <= 0:
+            raise ValidationError({
+                'billing_interval_count': 'Billing interval count must be greater than 0'
+            })
 
 
 class Subscription(TenantBaseModel):
@@ -2172,7 +2790,12 @@ class Subscription(TenantBaseModel):
     
     # Customization
     custom_price = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True)
-    discount_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0.00'))
+    discount_percentage = models.DecimalField(
+        max_digits=5, 
+        decimal_places=2, 
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0')), MaxValueValidator(Decimal('100'))]
+    )
     
     # Additional Information
     notes = models.TextField(blank=True)
@@ -2183,10 +2806,20 @@ class Subscription(TenantBaseModel):
             models.Index(fields=['tenant', 'customer']),
             models.Index(fields=['tenant', 'status']),
             models.Index(fields=['next_billing_date']),
+            models.Index(fields=['subscription_id']),
         ]
     
     def __str__(self):
         return f"{self.customer.name} - {self.plan.name}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.current_period_start >= self.current_period_end:
+            raise ValidationError({
+                'current_period_end': 'Period end must be after period start'
+            })
     
     @property
     def is_in_trial(self):
@@ -2224,8 +2857,15 @@ class DigitalProduct(TenantBaseModel, SoftDeleteMixin):
     file_type = models.CharField(max_length=50, blank=True)
     
     # Download Configuration
-    download_limit = models.IntegerField(default=5, help_text="Number of allowed downloads")
-    download_link_expiry_hours = models.IntegerField(default=24)
+    download_limit = models.IntegerField(
+        default=5, 
+        help_text="Number of allowed downloads",
+        validators=[MinValueValidator(1)]
+    )
+    download_link_expiry_hours = models.IntegerField(
+        default=24,
+        validators=[MinValueValidator(1)]
+    )
     
     # License Information
     license_type = models.CharField(max_length=100, blank=True)
@@ -2240,6 +2880,20 @@ class DigitalProduct(TenantBaseModel, SoftDeleteMixin):
     
     def __str__(self):
         return f"Digital: {self.ecommerce_product.title}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.download_limit <= 0:
+            raise ValidationError({
+                'download_limit': 'Download limit must be greater than 0'
+            })
+        
+        if self.download_link_expiry_hours <= 0:
+            raise ValidationError({
+                'download_link_expiry_hours': 'Expiry hours must be greater than 0'
+            })
 
 
 class DigitalDownload(TenantBaseModel):
@@ -2267,9 +2921,23 @@ class DigitalDownload(TenantBaseModel):
     class Meta:
         db_table = 'ecommerce_digital_download'
         unique_together = [('tenant', 'digital_product', 'customer', 'order')]
+        indexes = [
+            models.Index(fields=['tenant', 'customer']),
+            models.Index(fields=['download_token']),
+            models.Index(fields=['expires_at']),
+        ]
     
     def __str__(self):
         return f"Download: {self.digital_product.ecommerce_product.title} for {self.customer.name}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.expires_at <= timezone.now():
+            raise ValidationError({
+                'expires_at': 'Expiry date must be in the future'
+            })
     
     @property
     def is_expired(self):
@@ -2301,6 +2969,7 @@ class ProductAnalytics(TenantBaseModel):
     total_views = models.IntegerField(default=0)
     unique_views = models.IntegerField(default=0)
     views_this_month = models.IntegerField(default=0)
+    views_this_week = models.IntegerField(default=0)
     
     # Cart Statistics
     times_added_to_cart = models.IntegerField(default=0)
@@ -2323,6 +2992,10 @@ class ProductAnalytics(TenantBaseModel):
     
     class Meta:
         db_table = 'ecommerce_product_analytics'
+        indexes = [
+            models.Index(fields=['tenant', 'conversion_rate']),
+            models.Index(fields=['tenant', 'total_revenue']),
+        ]
     
     def __str__(self):
         return f"Analytics for {self.product.title}"
@@ -2351,6 +3024,10 @@ class AbandonedCart(TenantBaseModel):
     
     class Meta:
         db_table = 'ecommerce_abandoned_cart'
+        indexes = [
+            models.Index(fields=['tenant', 'recovered']),
+            models.Index(fields=['recovery_email_sent']),
+        ]
     
     def __str__(self):
         return f"Abandoned Cart - {self.cart.cart_id}"
@@ -2395,6 +3072,10 @@ class SalesChannel(TenantBaseModel):
     
     class Meta:
         db_table = 'ecommerce_sales_channel'
+        indexes = [
+            models.Index(fields=['tenant', 'is_active']),
+            models.Index(fields=['tenant', 'channel_type']),
+        ]
     
     def __str__(self):
         return f"{self.name} ({self.channel_type})"
@@ -2438,6 +3119,7 @@ class ChannelProduct(TenantBaseModel):
     
     # Sync Status
     last_synced_at = models.DateTimeField(blank=True, null=True)
+        # Sync Status (continued)
     sync_status = models.CharField(
         max_length=20, 
         choices=SyncStatus.choices, 
@@ -2448,9 +3130,23 @@ class ChannelProduct(TenantBaseModel):
     class Meta:
         db_table = 'ecommerce_channel_product'
         unique_together = [('tenant', 'sales_channel', 'product')]
+        indexes = [
+            models.Index(fields=['tenant', 'sales_channel', 'is_active']),
+            models.Index(fields=['tenant', 'product']),
+            models.Index(fields=['sync_status']),
+        ]
     
     def __str__(self):
         return f"{self.product.title} on {self.sales_channel.name}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.markup_percentage < 0:
+            raise ValidationError({
+                'markup_percentage': 'Markup percentage cannot be negative'
+            })
     
     @property
     def effective_price(self):
@@ -2490,6 +3186,7 @@ class ReturnRequest(TenantBaseModel, SoftDeleteMixin):
         CHANGED_MIND = 'CHANGED_MIND', 'Changed Mind'
         SIZE_ISSUE = 'SIZE_ISSUE', 'Size Issue'
         QUALITY_ISSUE = 'QUALITY_ISSUE', 'Quality Issue'
+        ARRIVED_LATE = 'ARRIVED_LATE', 'Arrived Late'
         OTHER = 'OTHER', 'Other'
     
     # Request Information
@@ -2531,6 +3228,7 @@ class ReturnRequest(TenantBaseModel, SoftDeleteMixin):
             models.Index(fields=['tenant', 'customer']),
             models.Index(fields=['tenant', 'status']),
             models.Index(fields=['return_number']),
+            models.Index(fields=['tenant', 'order']),
         ]
         ordering = ['-requested_at']
     
@@ -2541,6 +3239,20 @@ class ReturnRequest(TenantBaseModel, SoftDeleteMixin):
         if not self.return_number:
             self.return_number = self.generate_return_number()
         super().save(*args, **kwargs)
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.refund_amount < 0:
+            raise ValidationError({
+                'refund_amount': 'Refund amount cannot be negative'
+            })
+        
+        if self.refund_amount > self.order.total_amount:
+            raise ValidationError({
+                'refund_amount': 'Refund amount cannot exceed order total'
+            })
     
     def generate_return_number(self):
         """Generate unique return number"""
@@ -2558,6 +3270,8 @@ class ReturnRequestItem(TenantBaseModel):
     class ItemCondition(TextChoices):
         NEW = 'NEW', 'Like New'
         GOOD = 'GOOD', 'Good Condition'
+        FAIR = 'FAIR', 'Fair Condition'
+        POOR = 'POOR', 'Poor Condition'
         DAMAGED = 'DAMAGED', 'Damaged'
         DEFECTIVE = 'DEFECTIVE', 'Defective'
         UNUSABLE = 'UNUSABLE', 'Unusable'
@@ -2566,6 +3280,7 @@ class ReturnRequestItem(TenantBaseModel):
         REFUND = 'REFUND', 'Refund'
         EXCHANGE = 'EXCHANGE', 'Exchange'
         STORE_CREDIT = 'STORE_CREDIT', 'Store Credit'
+        REPAIR = 'REPAIR', 'Repair'
         REJECT = 'REJECT', 'Reject'
     
     return_request = models.ForeignKey(
@@ -2576,7 +3291,7 @@ class ReturnRequestItem(TenantBaseModel):
     order_item = models.ForeignKey(OrderItem, on_delete=models.CASCADE, related_name='return_items')
     
     # Return Quantity
-    quantity_requested = models.IntegerField()
+    quantity_requested = models.IntegerField(validators=[MinValueValidator(1)])
     quantity_received = models.IntegerField(default=0)
     
     # Item Condition
@@ -2595,15 +3310,34 @@ class ReturnRequestItem(TenantBaseModel):
     
     # Financial
     refund_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
+    restocking_fee = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('0.00'))
     
     # Notes
     notes = models.TextField(blank=True)
     
     class Meta:
         db_table = 'ecommerce_return_request_item'
+        indexes = [
+            models.Index(fields=['tenant', 'return_request']),
+            models.Index(fields=['tenant', 'order_item']),
+        ]
     
     def __str__(self):
         return f"{self.order_item.product_name} x {self.quantity_requested}"
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        if self.quantity_requested > self.order_item.quantity:
+            raise ValidationError({
+                'quantity_requested': 'Cannot return more items than were ordered'
+            })
+        
+        if self.quantity_received > self.quantity_requested:
+            raise ValidationError({
+                'quantity_received': 'Cannot receive more items than were requested'
+            })
 
 
 # ============================================================================
@@ -2625,9 +3359,14 @@ class EcommerceManager:
                     raise ValueError("Cart is empty")
                 
                 # Check inventory availability
-                for item in cart.items.all():
-                    if item.product.track_quantity and not item.product.is_in_stock:
-                        raise ValueError(f"Product {item.product.title} is out of stock")
+                for item in cart.items.select_related('product', 'variant'):
+                    can_purchase, message = item.product.can_purchase(item.quantity)
+                    if not can_purchase:
+                        raise ValueError(f"Product {item.product.title}: {message}")
+                    
+                    # Check variant availability if applicable
+                    if item.variant and not item.variant.is_in_stock:
+                        raise ValueError(f"Variant {item.variant.title} is out of stock")
                 
                 # Create order
                 order = Order.objects.create(
@@ -2649,30 +3388,30 @@ class EcommerceManager:
                     discount_codes=cart.discount_codes,
                     
                     # Billing address
-                    billing_first_name=customer_info.get('first_name'),
-                    billing_last_name=customer_info.get('last_name'),
+                    billing_first_name=customer_info.get('first_name', ''),
+                    billing_last_name=customer_info.get('last_name', ''),
                     billing_company=customer_info.get('company', ''),
-                    billing_address_line1=customer_info.get('address1'),
+                    billing_address_line1=customer_info.get('address1', ''),
                     billing_address_line2=customer_info.get('address2', ''),
-                    billing_city=customer_info.get('city'),
-                    billing_state=customer_info.get('state'),
-                    billing_postal_code=customer_info.get('postal_code'),
-                    billing_country=customer_info.get('country'),
+                    billing_city=customer_info.get('city', ''),
+                    billing_state=customer_info.get('state', ''),
+                    billing_postal_code=customer_info.get('postal_code', ''),
+                    billing_country=customer_info.get('country', ''),
                     
                     # Shipping address
-                    shipping_first_name=shipping_info.get('first_name'),
-                    shipping_last_name=shipping_info.get('last_name'),
+                    shipping_first_name=shipping_info.get('first_name', ''),
+                    shipping_last_name=shipping_info.get('last_name', ''),
                     shipping_company=shipping_info.get('company', ''),
-                    shipping_address_line1=shipping_info.get('address1'),
+                    shipping_address_line1=shipping_info.get('address1', ''),
                     shipping_address_line2=shipping_info.get('address2', ''),
-                    shipping_city=shipping_info.get('city'),
-                    shipping_state=shipping_info.get('state'),
-                    shipping_postal_code=shipping_info.get('postal_code'),
-                    shipping_country=shipping_info.get('country'),
+                    shipping_city=shipping_info.get('city', ''),
+                    shipping_state=shipping_info.get('state', ''),
+                    shipping_postal_code=shipping_info.get('postal_code', ''),
+                    shipping_country=shipping_info.get('country', ''),
                     
                     # Payment info
-                    payment_method=payment_info.get('method'),
-                    payment_gateway=payment_info.get('gateway'),
+                    payment_method=payment_info.get('method', ''),
+                    payment_gateway=payment_info.get('gateway', ''),
                     
                     # Source
                     source_cart=cart,
@@ -2687,7 +3426,7 @@ class EcommerceManager:
                         product=cart_item.product,
                         variant=cart_item.variant,
                         product_name=cart_item.product.title,
-                        product_sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku,
+                        product_sku=cart_item.variant.sku if cart_item.variant else cart_item.product.sku or '',
                         variant_title=cart_item.variant.title if cart_item.variant else '',
                         variant_attributes=cart_item.variant.attributes if cart_item.variant else {},
                         quantity=cart_item.quantity,
@@ -2714,68 +3453,75 @@ class EcommerceManager:
                             discount=discount,
                             customer=cart.customer,
                             order=order,
-                            discount_amount=cart.discount_amount  # This could be improved to track individual discount amounts
+                            discount_amount=cart.discount_amount
                         )
                     except Discount.DoesNotExist:
-                        pass  # Discount might have been deleted
+                        logger.warning(f"Discount {coupon_code} not found during order creation")
                 
+                logger.info(f"Order {order.order_number} created successfully from cart {cart.cart_id}")
                 return order
                 
         except Exception as e:
+            logger.error(f"Failed to create order from cart {cart.cart_id}: {str(e)}")
             raise Exception(f"Failed to create order: {str(e)}")
     
     @staticmethod
     def calculate_shipping_rates(cart, shipping_address):
         """Calculate available shipping rates for cart"""
-        country = shipping_address.get('country')
-        state = shipping_address.get('state')
-        postal_code = shipping_address.get('postal_code')
-        
-        # Find applicable shipping zones
-        zones = ShippingZone.objects.filter(
-            tenant=cart.tenant,
-            is_active=True
-        )
-        
-        applicable_zones = []
-        for zone in zones:
-            if country in zone.countries:
-                # Check state/postal code if specified
-                if zone.states and state not in zone.states:
-                    continue
-                if zone.postal_codes:
-                    # Simple postal code matching (can be enhanced with regex)
-                    postal_match = any(
-                        postal_code.startswith(pattern) 
-                        for pattern in zone.postal_codes
-                    )
-                    if not postal_match:
+        try:
+            country = shipping_address.get('country')
+            state = shipping_address.get('state')
+            postal_code = shipping_address.get('postal_code')
+            
+            # Find applicable shipping zones
+            zones = ShippingZone.objects.filter(
+                tenant=cart.tenant,
+                is_active=True
+            )
+            
+            applicable_zones = []
+            for zone in zones:
+                if country in zone.countries:
+                    # Check state/postal code if specified
+                    if zone.states and state not in zone.states:
                         continue
-                
-                applicable_zones.append(zone)
-        
-        # Get shipping methods for applicable zones
-        shipping_rates = []
-        total_weight = sum(
-            (item.variant.weight if item.variant else item.product.weight) or 0
-            for item in cart.items.select_related('product', 'variant')
-        )
-        
-        for zone in applicable_zones:
-            methods = zone.shipping_methods.filter(is_active=True)
-            for method in methods:
-                rate = method.calculate_rate(cart.subtotal, total_weight)
-                if rate is not None:
-                    shipping_rates.append({
-                        'method_id': method.id,
-                        'name': method.name,
-                        'description': method.description,
-                        'rate': rate,
-                        'estimated_days_min': method.estimated_delivery_days_min,
-                        'estimated_days_max': method.estimated_delivery_days_max,
-                    })
-        
-        return sorted(shipping_rates, key=lambda x: x['rate'])
+                    if zone.postal_codes:
+                        # Simple postal code matching (can be enhanced with regex)
+                        postal_match = any(
+                            postal_code.startswith(pattern) 
+                            for pattern in zone.postal_codes
+                        )
+                        if not postal_match:
+                            continue
+                    
+                    applicable_zones.append(zone)
+            
+            # Get shipping methods for applicable zones
+            shipping_rates = []
+            total_weight = sum(
+                (item.variant.weight if item.variant else item.product.weight) or 0
+                for item in cart.items.select_related('product', 'variant')
+            )
+            
+            for zone in applicable_zones:
+                methods = zone.shipping_methods.filter(is_active=True)
+                for method in methods:
+                    rate = method.calculate_rate(cart.subtotal, total_weight)
+                    if rate is not None:
+                        shipping_rates.append({
+                            'method_id': method.id,
+                            'name': method.name,
+                            'description': method.description,
+                            'rate': rate,
+                            'estimated_days_min': method.estimated_delivery_days_min,
+                            'estimated_days_max': method.estimated_delivery_days_max,
+                        })
+            
+            return sorted(shipping_rates, key=lambda x: x['rate'])
+            
+        except Exception as e:
+            logger.error(f"Error calculating shipping rates for cart {cart.cart_id}: {e}")
+            return []
     
     @staticmethod
     def apply_discount_to_cart(cart, discount_code):
@@ -2830,6 +3576,7 @@ class EcommerceManager:
         except Discount.DoesNotExist:
             return False, "Invalid discount code"
         except Exception as e:
+            logger.error(f"Error applying discount {discount_code} to cart {cart.cart_id}: {e}")
             return False, f"Error applying discount: {str(e)}"
     
     @staticmethod
@@ -2860,22 +3607,20 @@ class EcommerceManager:
             return True, "Discount removed successfully"
             
         except Exception as e:
+            logger.error(f"Error removing discount {discount_code} from cart {cart.cart_id}: {e}")
             return False, f"Error removing discount: {str(e)}"
     
     @staticmethod
     def get_product_recommendations(product, limit=4):
         """Get enhanced product recommendations"""
-        recommendations = []
-        
         try:
+            recommendations = []
+            
             # Get products from same collections
             if product.collections.exists():
-                collection_products = EcommerceProduct.objects.filter(
+                collection_products = EcommerceProduct.published.filter(
                     tenant=product.tenant,
-                    collections__in=product.collections.all(),
-                    is_active=True,
-                    is_published=True,
-                    status='PUBLISHED'
+                    collections__in=product.collections.all()
                 ).exclude(id=product.id).distinct()[:limit]
                 
                 recommendations.extend(collection_products)
@@ -2883,12 +3628,9 @@ class EcommerceManager:
             # Fill remaining slots with products from same category
             if len(recommendations) < limit and product.inventory_product:
                 remaining_slots = limit - len(recommendations)
-                category_products = EcommerceProduct.objects.filter(
+                category_products = EcommerceProduct.published.filter(
                     tenant=product.tenant,
-                    inventory_product__category=product.inventory_product.category,
-                    is_active=True,
-                    is_published=True,
-                    status='PUBLISHED'
+                    inventory_product__category=product.inventory_product.category
                 ).exclude(id=product.id).exclude(
                     id__in=[p.id for p in recommendations]
                 )[:remaining_slots]
@@ -2898,12 +3640,9 @@ class EcommerceManager:
             # Fill remaining slots with featured products
             if len(recommendations) < limit:
                 remaining_slots = limit - len(recommendations)
-                featured_products = EcommerceProduct.objects.filter(
+                featured_products = EcommerceProduct.published.filter(
                     tenant=product.tenant,
-                    is_featured=True,
-                    is_active=True,
-                    is_published=True,
-                    status='PUBLISHED'
+                    is_featured=True
                 ).exclude(id=product.id).exclude(
                     id__in=[p.id for p in recommendations]
                 )[:remaining_slots]
@@ -2913,7 +3652,7 @@ class EcommerceManager:
             return recommendations[:limit]
             
         except Exception as e:
-            # Return empty list on error
+            logger.error(f"Error getting recommendations for product {product.id}: {e}")
             return []
     
     @staticmethod
@@ -2939,34 +3678,36 @@ class EcommerceManager:
                 return False, "Invalid charge amount"
             
             # Create transaction record
-            transaction = GiftCardTransaction.objects.create(
-                tenant=order.tenant,
-                gift_card=gift_card,
-                order=order,
-                transaction_type=GiftCardTransaction.TransactionType.REDEMPTION,
-                amount=charge_amount,
-                balance_before=gift_card.current_balance,
-                balance_after=gift_card.current_balance - charge_amount
-            )
-            
-            # Update gift card balance
-            gift_card.current_balance -= charge_amount
-            gift_card.times_used += 1
-            
-            if not gift_card.first_used_at:
-                gift_card.first_used_at = timezone.now()
-            gift_card.last_used_at = timezone.now()
-            
-            if gift_card.current_balance <= 0:
-                gift_card.status = GiftCard.Status.REDEEMED
-            
-            gift_card.save()
+            with transaction.atomic():
+                transaction_record = GiftCardTransaction.objects.create(
+                    tenant=order.tenant,
+                    gift_card=gift_card,
+                    order=order,
+                    transaction_type=GiftCardTransaction.TransactionType.REDEMPTION,
+                    amount=charge_amount,
+                    balance_before=gift_card.current_balance,
+                    balance_after=gift_card.current_balance - charge_amount
+                )
+                
+                # Update gift card balance
+                gift_card.current_balance -= charge_amount
+                gift_card.times_used += 1
+                
+                if not gift_card.first_used_at:
+                    gift_card.first_used_at = timezone.now()
+                gift_card.last_used_at = timezone.now()
+                
+                if gift_card.current_balance <= 0:
+                    gift_card.status = GiftCard.Status.REDEEMED
+                
+                gift_card.save()
             
             return True, f"Gift card charged ${charge_amount}"
             
         except GiftCard.DoesNotExist:
             return False, "Invalid gift card code"
         except Exception as e:
+            logger.error(f"Error processing gift card {gift_card_code} for order {order.order_number}: {e}")
             return False, f"Error processing gift card: {str(e)}"
     
     @staticmethod
@@ -3013,61 +3754,344 @@ class EcommerceManager:
             return analytics
             
         except Exception as e:
-            # Log error but don't raise exception
-            print(f"Error updating product analytics: {str(e)}")
+            logger.error(f"Error updating product analytics for product {product.id}: {e}")
             return None
+    
+    @staticmethod
+    def get_products_with_analytics(tenant, filters=None):
+        """Optimized product retrieval with analytics"""
+        try:
+            queryset = EcommerceProduct.published.filter(tenant=tenant)
+            
+            if filters:
+                if filters.get('collection_slug'):
+                    queryset = queryset.by_collection(filters['collection_slug'])
+                
+                if filters.get('min_price') and filters.get('max_price'):
+                    queryset = queryset.by_price_range(
+                        filters['min_price'], 
+                        filters['max_price']
+                    )
+                
+                if filters.get('in_stock'):
+                    queryset = queryset.in_stock()
+                
+                if filters.get('brand'):
+                    queryset = queryset.filter(brand__iexact=filters['brand'])
+                
+                if filters.get('vendor'):
+                    queryset = queryset.filter(vendor__iexact=filters['vendor'])
+            
+            return queryset.optimized()
+            
+        except Exception as e:
+            logger.error(f"Error getting products with analytics for tenant {tenant.id}: {e}")
+            return EcommerceProduct.objects.none()
+    
+    @staticmethod
+    def bulk_update_product_analytics(tenant):
+        """Bulk update analytics for all products"""
+        try:
+            products = EcommerceProduct.objects.filter(tenant=tenant)
+            analytics_to_update = []
+            
+            for product in products:
+                analytics = EcommerceManager.update_product_analytics(product)
+                if analytics:
+                    analytics_to_update.append(analytics)
+            
+            # Bulk update for better performance
+            if analytics_to_update:
+                ProductAnalytics.objects.bulk_update(
+                    analytics_to_update,
+                    ['total_revenue', 'times_purchased', 'conversion_rate', 'cart_abandonment_rate']
+                )
+            
+            logger.info(f"Updated analytics for {len(analytics_to_update)} products for tenant {tenant.id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error bulk updating analytics for tenant {tenant.id}: {e}")
+            return False
 
 
 # ============================================================================
-# SIGNAL HANDLERS (Optional - for automatic updates)
+# SIGNAL HANDLERS
 # ============================================================================
 
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import post_save, post_delete, m2m_changed
 from django.dispatch import receiver
 
 @receiver(post_save, sender=OrderItem)
 def update_product_sales_count(sender, instance, created, **kwargs):
     """Update product sales count when order item is created"""
     if created and instance.order.status in ['COMPLETED', 'DELIVERED']:
-        product = instance.product
-        product.sales_count = OrderItem.objects.filter(
-            tenant=product.tenant,
-            product=product,
-            order__status__in=['COMPLETED', 'DELIVERED']
-        ).aggregate(
-            total=models.Sum('quantity')
-        )['total'] or 0
-        product.save(update_fields=['sales_count'])
+        try:
+            product = instance.product
+            product.sales_count = OrderItem.objects.filter(
+                tenant=product.tenant,
+                product=product,
+                order__status__in=['COMPLETED', 'DELIVERED']
+            ).aggregate(
+                total=models.Sum('quantity')
+            )['total'] or 0
+            product.save(update_fields=['sales_count'])
+        except Exception as e:
+            logger.error(f"Error updating sales count for product {instance.product.id}: {e}")
+
 
 @receiver(post_save, sender=ProductReview)
 def update_product_rating(sender, instance, created, **kwargs):
     """Update product average rating when review is created/updated"""
     if instance.status == ProductReview.ReviewStatus.APPROVED:
-        product = instance.product
-        reviews = ProductReview.objects.filter(
-            tenant=product.tenant,
-            product=product,
-            status=ProductReview.ReviewStatus.APPROVED
-        )
-        
-        product.review_count = reviews.count()
-        if product.review_count > 0:
-            product.average_rating = reviews.aggregate(
-                avg=models.Avg('rating')
-            )['avg'] or Decimal('0.00')
-        else:
-            product.average_rating = Decimal('0.00')
-        
-        product.save(update_fields=['review_count', 'average_rating'])
+        try:
+            product = instance.product
+            reviews = ProductReview.objects.filter(
+                tenant=product.tenant,
+                product=product,
+                status=ProductReview.ReviewStatus.APPROVED
+            )
+            
+            product.review_count = reviews.count()
+            if product.review_count > 0:
+                product.average_rating = reviews.aggregate(
+                    avg=models.Avg('rating')
+                )['avg'] or Decimal('0.00')
+            else:
+                product.average_rating = Decimal('0.00')
+            
+            product.save(update_fields=['review_count', 'average_rating'])
+        except Exception as e:
+            logger.error(f"Error updating rating for product {instance.product.id}: {e}")
+
 
 @receiver(post_save, sender=Cart)
 def create_abandoned_cart_tracking(sender, instance, created, **kwargs):
     """Create abandoned cart tracking when cart becomes abandoned"""
     if not created and instance.status == Cart.CartStatus.ABANDONED:
-        abandoned_cart, created = AbandonedCart.objects.get_or_create(
-            tenant=instance.tenant,
-            cart=instance
+        try:
+            abandoned_cart, created = AbandonedCart.objects.get_or_create(
+                tenant=instance.tenant,
+                cart=instance
+            )
+            if created:
+                logger.info(f"Created abandoned cart tracking for cart {instance.cart_id}")
+        except Exception as e:
+            logger.error(f"Error creating abandoned cart tracking for cart {instance.cart_id}: {e}")
+
+
+@receiver(post_save, sender=ProductVariant)
+def update_product_variant_cache(sender, instance, created, **kwargs):
+    """Update product cached variant data when variant is saved"""
+    try:
+        product = instance.ecommerce_product
+        product.update_cached_data()
+    except Exception as e:
+        logger.error(f"Error updating product variant cache for product {instance.ecommerce_product.id}: {e}")
+
+
+@receiver(post_delete, sender=ProductVariant)
+def update_product_variant_cache_on_delete(sender, instance, **kwargs):
+    """Update product cached variant data when variant is deleted"""
+    try:
+        product = instance.ecommerce_product
+        product.update_cached_data()
+    except Exception as e:
+        logger.error(f"Error updating product variant cache on delete for product {instance.ecommerce_product.id}: {e}")
+
+
+@receiver(m2m_changed, sender=Collection.products.through)
+def update_collection_product_count(sender, instance, action, pk_set, **kwargs):
+    """Update collection product count when products are added/removed"""
+    if action in ['post_add', 'post_remove', 'post_clear']:
+        try:
+            if isinstance(instance, Collection):
+                instance.products_count = instance.products.filter(
+                    is_active=True,
+                    is_published=True,
+                    status='PUBLISHED'
+                ).count()
+                instance.save(update_fields=['products_count'])
+        except Exception as e:
+            logger.error(f"Error updating collection product count for collection {instance.id}: {e}")
+
+
+# ============================================================================
+# ADMIN CUSTOMIZATIONS (Optional)
+# ============================================================================
+
+from django.contrib import admin
+
+class EcommerceProductAdmin(admin.ModelAdmin):
+    list_display = ['title', 'status', 'price', 'is_featured', 'sales_count', 'created_at']
+    list_filter = ['status', 'is_featured', 'is_published', 'product_type', 'created_at']
+    search_fields = ['title', 'description', 'brand', 'vendor']
+    readonly_fields = ['slug', 'url_handle', 'sales_count', 'view_count', 'average_rating']
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('title', 'slug', 'url_handle', 'short_description', 'description')
+        }),
+        ('Product Classification', {
+            'fields': ('product_type', 'status', 'visibility', 'primary_collection')
+        }),
+        ('Pricing', {
+            'fields': ('price', 'compare_at_price', 'sale_price', 'sale_price_start', 'sale_price_end')
+        }),
+        ('Inventory', {
+            'fields': ('track_quantity', 'stock_quantity', 'low_stock_threshold', 'allow_backorders')
+        }),
+        ('SEO', {
+            'fields': ('seo_title', 'seo_description', 'seo_keywords'),
+            'classes': ('collapse',)
+        }),
+        ('Performance', {
+            'fields': ('sales_count', 'view_count', 'average_rating'),
+            'classes': ('collapse',)
+        })
+    )
+
+
+class OrderAdmin(admin.ModelAdmin):
+    list_display = ['order_number', 'customer_name', 'status', 'payment_status', 'total_amount', 'order_date']
+    list_filter = ['status', 'payment_status', 'fulfillment_status', 'order_date']
+    search_fields = ['order_number', 'customer_email', 'billing_first_name', 'billing_last_name']
+    readonly_fields = ['order_number', 'order_id', 'order_date']
+    
+    fieldsets = (
+        ('Order Information', {
+            'fields': ('order_number', 'order_id', 'order_date', 'status')
+        }),
+        ('Customer Information', {
+            'fields': ('customer', 'customer_email', 'customer_phone')
+        }),
+        ('Financial Information', {
+            'fields': ('subtotal', 'tax_amount', 'shipping_amount', 'discount_amount', 'total_amount')
+        }),
+        ('Payment & Fulfillment', {
+            'fields': ('payment_status', 'fulfillment_status', 'payment_method')
+        })
+    )
+
+
+# Register admin classes
+admin.site.register(EcommerceProduct, EcommerceProductAdmin)
+admin.site.register(Order, OrderAdmin)
+
+
+# ============================================================================
+# ADDITIONAL UTILITY FUNCTIONS
+# ============================================================================
+
+def get_cart_for_user(tenant, user=None, session_id=None):
+    """Get or create cart for user or session"""
+    try:
+        if user and user.is_authenticated:
+            # Try to get customer first
+            try:
+                customer = Customer.objects.get(tenant=tenant, user=user)
+                cart, created = Cart.objects.get_or_create(
+                    tenant=tenant,
+                    customer=customer,
+                    status=Cart.CartStatus.ACTIVE,
+                    defaults={'session_id': session_id or ''}
+                )
+            except Customer.DoesNotExist:
+                # Fallback to session-based cart
+                cart, created = Cart.objects.get_or_create(
+                    tenant=tenant,
+                    session_id=session_id,
+                    status=Cart.CartStatus.ACTIVE,
+                    defaults={'customer': None}
+                )
+        else:
+            # Session-based cart for anonymous users
+            cart, created = Cart.objects.get_or_create(
+                tenant=tenant,
+                session_id=session_id,
+                status=Cart.CartStatus.ACTIVE,
+                defaults={'customer': None}
+            )
+        
+        return cart
+    except Exception as e:
+        logger.error(f"Error getting cart for user/session: {e}")
+        return None
+
+
+def merge_carts(session_cart, user_cart):
+    """Merge session cart into user cart when user logs in"""
+    try:
+        if not session_cart or not user_cart:
+            return user_cart
+        
+        with transaction.atomic():
+            # Move items from session cart to user cart
+            for session_item in session_cart.items.all():
+                try:
+                    # Check if item already exists in user cart
+                    existing_item = user_cart.items.get(
+                        product=session_item.product,
+                        variant=session_item.variant
+                    )
+                    # Update quantity
+                    existing_item.quantity += session_item.quantity
+                    existing_item.save()
+                except CartItem.DoesNotExist:
+                    # Move item to user cart
+                    session_item.cart = user_cart
+                    session_item.save()
+            
+            # Delete session cart
+            session_cart.delete()
+            
+            # Recalculate user cart totals
+            user_cart.calculate_totals()
+            
+        return user_cart
+    except Exception as e:
+        logger.error(f"Error merging carts: {e}")
+        return user_cart
+
+
+def cleanup_expired_carts(tenant, days=30):
+    """Cleanup expired carts"""
+    try:
+        cutoff_date = timezone.now() - timezone.timedelta(days=days)
+        expired_carts = Cart.objects.filter(
+            tenant=tenant,
+            status=Cart.CartStatus.ACTIVE,
+            updated_at__lt=cutoff_date
         )
-        if created:
-            # Initialize tracking data
-            abandoned_cart.save()
+        
+        count = expired_carts.count()
+        expired_carts.update(status=Cart.CartStatus.EXPIRED)
+        
+        logger.info(f"Marked {count} carts as expired for tenant {tenant.id}")
+        return count
+    except Exception as e:
+        logger.error(f"Error cleaning up expired carts for tenant {tenant.id}: {e}")
+        return 0
+
+
+def generate_product_sitemap(tenant):
+    """Generate sitemap URLs for products"""
+    try:
+        products = EcommerceProduct.published.filter(
+            tenant=tenant
+        ).values('url_handle', 'updated_at')
+        
+        sitemap_urls = []
+        for product in products:
+            sitemap_urls.append({
+                'location': f'/products/{product["url_handle"]}/',
+                'lastmod': product['updated_at'],
+                'priority': 0.8,
+                'changefreq': 'weekly'
+            })
+        
+        return sitemap_urls
+    except Exception as e:
+        logger.error(f"Error generating product sitemap for tenant {tenant.id}: {e}")
+        return []
+
