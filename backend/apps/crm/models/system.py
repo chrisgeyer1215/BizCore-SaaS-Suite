@@ -1,158 +1,251 @@
+# ============================================================================
+# backend/apps/crm/models/system.py - System & Configuration Models
+# ============================================================================
+
+from django.db import models, transaction
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.core.validators import RegexValidator, MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
+from django.utils import timezone
+from decimal import Decimal
+import uuid
+import json
+
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+
+User = get_user_model()
+
+
 class CustomField(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced custom field definitions for flexible data collection"""
+    """Dynamic custom fields for extending CRM entities"""
     
     FIELD_TYPES = [
-        ('TEXT', 'Text'),
+        ('TEXT', 'Text Field'),
         ('TEXTAREA', 'Text Area'),
         ('NUMBER', 'Number'),
         ('DECIMAL', 'Decimal'),
         ('DATE', 'Date'),
         ('DATETIME', 'Date Time'),
-        ('BOOLEAN', 'Boolean'),
-        ('DROPDOWN', 'Dropdown'),
-        ('MULTI_SELECT', 'Multi Select'),
+        ('BOOLEAN', 'Yes/No'),
         ('EMAIL', 'Email'),
         ('URL', 'URL'),
-        ('PHONE', 'Phone'),
+        ('PHONE', 'Phone Number'),
         ('CURRENCY', 'Currency'),
         ('PERCENTAGE', 'Percentage'),
-        ('FILE', 'File Upload'),
+        ('PICKLIST', 'Pick List'),
+        ('MULTI_PICKLIST', 'Multi-Select Pick List'),
         ('LOOKUP', 'Lookup'),
+        ('FILE', 'File Upload'),
+        ('IMAGE', 'Image'),
+        ('JSON', 'JSON Data'),
     ]
     
     ENTITY_TYPES = [
-        ('lead', 'Lead'),
-        ('account', 'Account'),
-        ('contact', 'Contact'),
-        ('opportunity', 'Opportunity'),
-        ('activity', 'Activity'),
-        ('campaign', 'Campaign'),
-        ('ticket', 'Ticket'),
-        ('product', 'Product'),
+        ('LEAD', 'Lead'),
+        ('ACCOUNT', 'Account'),
+        ('CONTACT', 'Contact'),
+        ('OPPORTUNITY', 'Opportunity'),
+        ('ACTIVITY', 'Activity'),
+        ('CAMPAIGN', 'Campaign'),
+        ('TICKET', 'Ticket'),
+        ('PRODUCT', 'Product'),
     ]
     
     # Field Definition
-    field_name = models.CharField(max_length=100)
-    field_label = models.CharField(max_length=255)
+    name = models.CharField(max_length=100)
+    display_name = models.CharField(max_length=100)
     field_type = models.CharField(max_length=20, choices=FIELD_TYPES)
     entity_type = models.CharField(max_length=20, choices=ENTITY_TYPES)
     
-    # Field Configuration
-    is_required = models.BooleanField(default=False)
+    # Field Properties
+    description = models.TextField(blank=True)
+    help_text = models.CharField(max_length=255, blank=True)
+    placeholder = models.CharField(max_length=100, blank=True)
     default_value = models.TextField(blank=True)
-    placeholder_text = models.CharField(max_length=255, blank=True)
-    help_text = models.TextField(blank=True)
     
     # Validation Rules
-    min_length = models.IntegerField(null=True, blank=True)
+    is_required = models.BooleanField(default=False)
+    is_unique = models.BooleanField(default=False)
     max_length = models.IntegerField(null=True, blank=True)
-    min_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
-    max_value = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
-    validation_pattern = models.CharField(max_length=500, blank=True)
-    validation_message = models.CharField(max_length=255, blank=True)
+    min_value = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    max_value = models.DecimalField(max_digits=20, decimal_places=6, null=True, blank=True)
+    regex_pattern = models.CharField(max_length=500, blank=True)
+    regex_message = models.CharField(max_length=255, blank=True)
     
-    # Options for Dropdown/Multi-select
-    field_options = models.JSONField(default=list)
+    # Picklist Options (JSON for flexibility)
+    picklist_options = models.JSONField(default=list, blank=True)
+    
+    # Display Settings
+    order_index = models.IntegerField(default=0)
+    is_visible_in_list = models.BooleanField(default=True)
+    is_visible_in_detail = models.BooleanField(default=True)
+    is_visible_in_form = models.BooleanField(default=True)
+    is_searchable = models.BooleanField(default=True)
     
     # Lookup Configuration
-    lookup_entity = models.CharField(max_length=50, blank=True)
+    lookup_entity = models.CharField(max_length=20, blank=True)
     lookup_field = models.CharField(max_length=100, blank=True)
     
-    # Display Configuration
-    display_order = models.IntegerField(default=0)
-    column_width = models.IntegerField(default=12)  # Bootstrap column width
-    is_searchable = models.BooleanField(default=False)
-    is_filterable = models.BooleanField(default=False)
+    # Dependencies and Conditional Logic
+    dependent_field = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='dependent_fields'
+    )
+    conditional_logic = models.JSONField(default=dict, blank=True)
     
-    # Access Control
-    visible_to_roles = models.JSONField(default=list)
-    editable_by_roles = models.JSONField(default=list)
-    
-    # Settings
-    is_active = models.BooleanField(default=True)
+    # API Settings
+    api_name = models.CharField(max_length=100, blank=True)
+    is_api_accessible = models.BooleanField(default=True)
     
     class Meta:
-        ordering = ['entity_type', 'display_order', 'field_label']
+        ordering = ['entity_type', 'order_index', 'display_name']
         constraints = [
             models.UniqueConstraint(
-                fields=['tenant', 'entity_type', 'field_name'],
+                fields=['tenant', 'entity_type', 'name'],
                 name='unique_tenant_custom_field'
+            ),
+            models.UniqueConstraint(
+                fields=['tenant', 'entity_type', 'api_name'],
+                name='unique_tenant_custom_field_api'
             ),
         ]
         indexes = [
             models.Index(fields=['tenant', 'entity_type', 'is_active']),
+            models.Index(fields=['tenant', 'field_type']),
         ]
         
     def __str__(self):
-        return f'{self.entity_type.title()} - {self.field_label}'
+        return f'{self.entity_type} - {self.display_name}'
     
-    def validate_value(self, value):
-        """Validate field value against rules"""
-        if self.is_required and not value:
-            return False, 'This field is required'
+    def save(self, *args, **kwargs):
+        if not self.api_name:
+            self.api_name = self.name.lower().replace(' ', '_')
+        super().save(*args, **kwargs)
+    
+    def clean(self):
+        """Validate field configuration"""
+        super().clean()
         
-        if not value:
-            return True, None
+        # Validate picklist options for picklist fields
+        if self.field_type in ['PICKLIST', 'MULTI_PICKLIST'] and not self.picklist_options:
+            raise ValidationError('Picklist fields must have options defined')
         
-        # Type-specific validation
-        if self.field_type == 'EMAIL':
-            from django.core.validators import validate_email
-            try:
-                validate_email(value)
-            except ValidationError:
-                return False, 'Invalid email format'
+        # Validate lookup configuration
+        if self.field_type == 'LOOKUP' and not (self.lookup_entity and self.lookup_field):
+            raise ValidationError('Lookup fields must have entity and field specified')
         
-        elif self.field_type == 'NUMBER':
-            try:
-                num_value = int(value)
-                if self.min_value and num_value < self.min_value:
-                    return False, f'Value must be at least {self.min_value}'
-                if self.max_value and num_value > self.max_value:
-                    return False, f'Value must be at most {self.max_value}'
-            except ValueError:
-                return False, 'Invalid number format'
+        # Validate number ranges
+        if self.min_value is not None and self.max_value is not None:
+            if self.min_value > self.max_value:
+                raise ValidationError('Min value cannot be greater than max value')
+    
+    def get_validation_rules(self):
+        """Get validation rules for frontend"""
+        rules = {
+            'required': self.is_required,
+            'unique': self.is_unique,
+        }
         
-        elif self.field_type in ['TEXT', 'TEXTAREA']:
-            if self.min_length and len(str(value)) < self.min_length:
-                return False, f'Must be at least {self.min_length} characters'
-            if self.max_length and len(str(value)) > self.max_length:
-                return False, f'Must be at most {self.max_length} characters'
+        if self.max_length:
+            rules['maxLength'] = self.max_length
         
-        elif self.field_type == 'DROPDOWN':
-            if value not in [opt.get('value') for opt in self.field_options]:
-                return False, 'Invalid option selected'
+        if self.min_value is not None:
+            rules['min'] = float(self.min_value)
         
-        return True, None
+        if self.max_value is not None:
+            rules['max'] = float(self.max_value)
+        
+        if self.regex_pattern:
+            rules['pattern'] = self.regex_pattern
+            rules['patternMessage'] = self.regex_message
+        
+        return rules
+
+
+class CustomFieldValue(TenantBaseModel):
+    """Stores values for custom fields"""
+    
+    custom_field = models.ForeignKey(
+        CustomField,
+        on_delete=models.CASCADE,
+        related_name='values'
+    )
+    
+    # Generic relation to any CRM entity
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.CharField(max_length=36)
+    related_object = GenericForeignKey('content_type', 'object_id')
+    
+    # Value storage (uses JSON for flexibility)
+    value = models.JSONField(null=True, blank=True)
+    text_value = models.TextField(blank=True)  # For search indexing
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'custom_field', 'content_type', 'object_id'],
+                name='unique_custom_field_value'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant', 'content_type', 'object_id']),
+            models.Index(fields=['tenant', 'custom_field']),
+            models.Index(fields=['tenant', 'text_value']),
+        ]
+        
+    def __str__(self):
+        return f'{self.custom_field.display_name}: {self.text_value[:50]}'
+    
+    def save(self, *args, **kwargs):
+        # Update text_value for search indexing
+        if self.value is not None:
+            if isinstance(self.value, (str, int, float)):
+                self.text_value = str(self.value)
+            elif isinstance(self.value, bool):
+                self.text_value = 'Yes' if self.value else 'No'
+            elif isinstance(self.value, list):
+                self.text_value = ', '.join(str(v) for v in self.value)
+            else:
+                self.text_value = json.dumps(self.value)
+        
+        super().save(*args, **kwargs)
 
 
 class AuditTrail(TenantBaseModel):
-    """Enhanced audit trail for compliance and tracking"""
+    """Comprehensive audit trail for all CRM activities"""
     
     ACTION_TYPES = [
         ('CREATE', 'Created'),
         ('UPDATE', 'Updated'),
         ('DELETE', 'Deleted'),
+        ('RESTORE', 'Restored'),
         ('VIEW', 'Viewed'),
         ('EXPORT', 'Exported'),
         ('IMPORT', 'Imported'),
-        ('LOGIN', 'Login'),
-        ('LOGOUT', 'Logout'),
-        ('PERMISSION_CHANGE', 'Permission Changed'),
-        ('PASSWORD_CHANGE', 'Password Changed'),
-        ('BULK_UPDATE', 'Bulk Update'),
-        ('MERGE', 'Merged'),
-        ('CONVERT', 'Converted'),
         ('ASSIGN', 'Assigned'),
-        ('SHARE', 'Shared'),
-        ('ARCHIVE', 'Archived'),
-        ('RESTORE', 'Restored'),
+        ('UNASSIGN', 'Unassigned'),
+        ('CONVERT', 'Converted'),
+        ('DUPLICATE', 'Duplicated'),
+        ('MERGE', 'Merged'),
+        ('SPLIT', 'Split'),
+        ('APPROVE', 'Approved'),
+        ('REJECT', 'Rejected'),
+        ('SEND', 'Sent'),
+        ('RECEIVE', 'Received'),
+        ('LOGIN', 'Logged In'),
+        ('LOGOUT', 'Logged Out'),
+        ('PERMISSION_CHANGE', 'Permission Changed'),
+        ('STATUS_CHANGE', 'Status Changed'),
     ]
     
-    # Action Information
+    # Action Details
     action_type = models.CharField(max_length=20, choices=ACTION_TYPES)
-    action_timestamp = models.DateTimeField(auto_now_add=True)
-    
-    # User Information
+    action_datetime = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -160,95 +253,75 @@ class AuditTrail(TenantBaseModel):
         blank=True,
         related_name='audit_actions'
     )
-    user_email = models.EmailField(blank=True)
-    user_ip_address = models.GenericIPAddressField(null=True, blank=True)
-    user_agent = models.TextField(blank=True)
     
-    # Object Information
-    content_type = models.ForeignKey(
-        ContentType,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True
-    )
-    object_id = models.CharField(max_length=36, null=True, blank=True)
-    object_repr = models.CharField(max_length=255, blank=True)
+    # Entity Information
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE)
+    object_id = models.CharField(max_length=36)
+    object_name = models.CharField(max_length=255)
+    related_object = GenericForeignKey('content_type', 'object_id')
     
     # Change Details
-    field_changes = models.JSONField(default=dict)
-    old_values = models.JSONField(default=dict)
-    new_values = models.JSONField(default=dict)
+    field_name = models.CharField(max_length=100, blank=True)
+    old_value = models.JSONField(null=True, blank=True)
+    new_value = models.JSONField(null=True, blank=True)
+    change_summary = models.TextField(blank=True)
     
-    # Additional Context
+    # Context Information
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
     session_id = models.CharField(max_length=100, blank=True)
-    request_id = models.CharField(max_length=100, blank=True)
-    additional_data = models.JSONField(default=dict)
+    request_method = models.CharField(max_length=10, blank=True)
+    request_url = models.URLField(blank=True)
     
-    # System Information
-    system_version = models.CharField(max_length=50, blank=True)
-    module_name = models.CharField(max_length=100, blank=True)
+    # Additional Metadata
+    metadata = models.JSONField(default=dict, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    
+    # Risk Assessment
+    risk_level = models.CharField(
+        max_length=10,
+        choices=[('LOW', 'Low'), ('MEDIUM', 'Medium'), ('HIGH', 'High')],
+        default='LOW'
+    )
     
     class Meta:
-        ordering = ['-action_timestamp']
+        ordering = ['-action_datetime']
         indexes = [
-            models.Index(fields=['tenant', 'action_type', 'action_timestamp']),
-            models.Index(fields=['tenant', 'user', 'action_timestamp']),
+            models.Index(fields=['tenant', 'action_datetime']),
+            models.Index(fields=['tenant', 'action_type']),
+            models.Index(fields=['tenant', 'user']),
             models.Index(fields=['tenant', 'content_type', 'object_id']),
-            models.Index(fields=['tenant', 'action_timestamp']),
+            models.Index(fields=['tenant', 'ip_address']),
+            models.Index(fields=['tenant', 'risk_level']),
         ]
         
     def __str__(self):
-        user_str = self.user_email or (self.user.email if self.user else 'System')
-        return f'{user_str} {self.action_type} {self.object_repr} at {self.action_timestamp}'
+        user_name = self.user.get_full_name() if self.user else 'System'
+        return f'{user_name} {self.get_action_type_display()} {self.object_name}'
     
     @classmethod
-    def log_action(cls, tenant, user, action_type, obj=None, field_changes=None, 
-                   request=None, additional_data=None):
-        """Log an audit action"""
-        audit_data = {
-            'tenant': tenant,
-            'action_type': action_type,
-            'user': user if user and user.is_authenticated else None,
-            'additional_data': additional_data or {}
-        }
-        
-        # User information
-        if user and user.is_authenticated:
-            audit_data['user_email'] = user.email
-        
-        # Request information
-        if request:
-            audit_data['user_ip_address'] = cls._get_client_ip(request)
-            audit_data['user_agent'] = request.META.get('HTTP_USER_AGENT', '')[:500]
-            audit_data['session_id'] = request.session.session_key or ''
-        
-        # Object information
-        if obj:
-            audit_data['content_type'] = ContentType.objects.get_for_model(obj)
-            audit_data['object_id'] = str(obj.pk)
-            audit_data['object_repr'] = str(obj)[:255]
-        
-        # Field changes
-        if field_changes:
-            audit_data['field_changes'] = field_changes
-            audit_data['old_values'] = {k: v.get('old') for k, v in field_changes.items()}
-            audit_data['new_values'] = {k: v.get('new') for k, v in field_changes.items()}
-        
-        return cls.objects.create(**audit_data)
-    
-    @staticmethod
-    def _get_client_ip(request):
-        """Get client IP address from request"""
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
+    def log_action(cls, tenant, action_type, user, obj, field_name=None, 
+                   old_value=None, new_value=None, ip_address=None, 
+                   user_agent=None, metadata=None):
+        """Helper method to log audit actions"""
+        return cls.objects.create(
+            tenant=tenant,
+            action_type=action_type,
+            user=user,
+            content_type=ContentType.objects.get_for_model(obj),
+            object_id=str(obj.pk),
+            object_name=str(obj),
+            field_name=field_name or '',
+            old_value=old_value,
+            new_value=new_value,
+            ip_address=ip_address,
+            user_agent=user_agent or '',
+            metadata=metadata or {}
+        )
 
 
 class DataExportLog(TenantBaseModel):
-    """Enhanced data export tracking for compliance"""
+    """Track data exports for compliance and security"""
     
     EXPORT_TYPES = [
         ('CSV', 'CSV Export'),
@@ -257,7 +330,8 @@ class DataExportLog(TenantBaseModel):
         ('JSON', 'JSON Export'),
         ('XML', 'XML Export'),
         ('API', 'API Export'),
-        ('BACKUP', 'Data Backup'),
+        ('BACKUP', 'Backup Export'),
+        ('MIGRATION', 'Migration Export'),
     ]
     
     EXPORT_STATUS = [
@@ -266,112 +340,97 @@ class DataExportLog(TenantBaseModel):
         ('COMPLETED', 'Completed'),
         ('FAILED', 'Failed'),
         ('CANCELLED', 'Cancelled'),
+        ('EXPIRED', 'Expired'),
     ]
     
-    # Export Information
-    export_type = models.CharField(max_length=15, choices=EXPORT_TYPES)
-    export_name = models.CharField(max_length=255)
+    # Export Details
+    export_type = models.CharField(max_length=20, choices=EXPORT_TYPES)
+    entity_type = models.CharField(max_length=50)
     description = models.TextField(blank=True)
     
-    # User Information
+    # Request Information
     requested_by = models.ForeignKey(
         User,
-        on_delete=models.CASCADE,
-        related_name='data_exports'
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='export_requests'
     )
-    requested_date = models.DateTimeField(auto_now_add=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
     
     # Export Configuration
-    entity_types = models.JSONField(default=list)
-    filters = models.JSONField(default=dict)
-    fields_included = models.JSONField(default=list)
-    date_range = models.JSONField(default=dict)
+    filters = models.JSONField(default=dict, blank=True)
+    fields = models.JSONField(default=list, blank=True)
+    format_options = models.JSONField(default=dict, blank=True)
     
-    # Processing Information
+    # Processing Status
     status = models.CharField(max_length=15, choices=EXPORT_STATUS, default='PENDING')
     started_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
-    processing_time_seconds = models.FloatField(null=True, blank=True)
     
     # Results
     total_records = models.IntegerField(default=0)
     exported_records = models.IntegerField(default=0)
     file_path = models.CharField(max_length=500, blank=True)
-    file_size_bytes = models.BigIntegerField(null=True, blank=True)
+    file_size = models.BigIntegerField(default=0)  # Size in bytes
     download_url = models.URLField(blank=True)
     
-    # Security
-    is_encrypted = models.BooleanField(default=False)
-    password_protected = models.BooleanField(default=False)
-    expires_at = models.DateTimeField(null=True, blank=True)
+    # Security & Compliance
+    contains_pii = models.BooleanField(default=False)
+    security_classification = models.CharField(
+        max_length=20,
+        choices=[
+            ('PUBLIC', 'Public'),
+            ('INTERNAL', 'Internal'),
+            ('CONFIDENTIAL', 'Confidential'),
+            ('RESTRICTED', 'Restricted'),
+        ],
+        default='INTERNAL'
+    )
+    
+    # Access Control
     download_count = models.IntegerField(default=0)
+    last_downloaded = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    access_key = models.UUIDField(default=uuid.uuid4, unique=True)
     
-    # Error Information
+    # Error Handling
     error_message = models.TextField(blank=True)
-    error_details = models.JSONField(default=dict)
-    
-    # Compliance
-    reason_for_export = models.TextField(blank=True)
-    data_retention_period_days = models.IntegerField(null=True, blank=True)
+    error_details = models.JSONField(default=dict, blank=True)
     
     class Meta:
-        ordering = ['-requested_date']
+        ordering = ['-requested_at']
         indexes = [
-            models.Index(fields=['tenant', 'requested_by', 'status']),
-            models.Index(fields=['tenant', 'export_type', 'requested_date']),
             models.Index(fields=['tenant', 'status']),
+            models.Index(fields=['tenant', 'requested_by']),
+            models.Index(fields=['tenant', 'export_type']),
+            models.Index(fields=['tenant', 'entity_type']),
+            models.Index(fields=['access_key']),
         ]
         
     def __str__(self):
-        return f'{self.export_name} - {self.requested_by.get_full_name()}'
+        return f'{self.export_type} - {self.entity_type} ({self.status})'
     
-    def start_processing(self):
-        """Mark export as started"""
-        self.status = 'PROCESSING'
-        self.started_at = timezone.now()
-        self.save(update_fields=['status', 'started_at'])
+    def save(self, *args, **kwargs):
+        # Set expiration date if not set
+        if not self.expires_at and self.status == 'COMPLETED':
+            self.expires_at = timezone.now() + timezone.timedelta(days=7)
+        super().save(*args, **kwargs)
     
-    def mark_completed(self, file_path, file_size, total_records, exported_records):
-        """Mark export as completed"""
-        self.status = 'COMPLETED'
-        self.completed_at = timezone.now()
-        self.file_path = file_path
-        self.file_size_bytes = file_size
-        self.total_records = total_records
-        self.exported_records = exported_records
-        
-        if self.started_at:
-            duration = self.completed_at - self.started_at
-            self.processing_time_seconds = duration.total_seconds()
-        
-        self.save()
-    
-    def mark_failed(self, error_message, error_details=None):
-        """Mark export as failed"""
-        self.status = 'FAILED'
-        self.completed_at = timezone.now()
-        self.error_message = error_message
-        self.error_details = error_details or {}
-        
-        if self.started_at:
-            duration = self.completed_at - self.started_at
-            self.processing_time_seconds = duration.total_seconds()
-        
-        self.save()
-    
-    def track_download(self):
-        """Track file download"""
-        self.download_count += 1
-        self.save(update_fields=['download_count'])
-    
-    @property
     def is_expired(self):
         """Check if export has expired"""
         return self.expires_at and timezone.now() > self.expires_at
+    
+    def generate_download_url(self):
+        """Generate secure download URL"""
+        if self.status == 'COMPLETED' and not self.is_expired():
+            base_url = '/api/crm/exports/download/'
+            return f'{base_url}{self.access_key}/'
+        return None
 
 
 class APIUsageLog(TenantBaseModel):
-    """Enhanced API usage tracking for monitoring and billing"""
+    """Track API usage for monitoring and billing"""
     
     HTTP_METHODS = [
         ('GET', 'GET'),
@@ -379,47 +438,44 @@ class APIUsageLog(TenantBaseModel):
         ('PUT', 'PUT'),
         ('PATCH', 'PATCH'),
         ('DELETE', 'DELETE'),
-        ('HEAD', 'HEAD'),
         ('OPTIONS', 'OPTIONS'),
+        ('HEAD', 'HEAD'),
     ]
     
     # Request Information
-    api_name = models.CharField(max_length=100)
-    endpoint = models.CharField(max_length=500)
     method = models.CharField(max_length=10, choices=HTTP_METHODS)
+    endpoint = models.CharField(max_length=500)
+    api_version = models.CharField(max_length=10, default='v1')
     request_time = models.DateTimeField(auto_now_add=True)
     
-    # User Information
+    # User Context
     user = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='api_usage'
+        related_name='api_requests'
     )
     api_key = models.CharField(max_length=100, blank=True)
-    client_ip = models.GenericIPAddressField(null=True, blank=True)
-    user_agent = models.TextField(blank=True)
     
     # Request Details
-    request_size_bytes = models.IntegerField(null=True, blank=True)
-    request_headers = models.JSONField(default=dict)
-    query_parameters = models.JSONField(default=dict)
+    query_params = models.JSONField(default=dict, blank=True)
+    request_headers = models.JSONField(default=dict, blank=True)
+    request_body_size = models.IntegerField(default=0)
     
     # Response Information
-    response_status_code = models.IntegerField()
-    response_size_bytes = models.IntegerField(null=True, blank=True)
-    response_time_ms = models.FloatField()
+    status_code = models.IntegerField()
+    response_time_ms = models.IntegerField()
+    response_size = models.IntegerField(default=0)
     
-    # Performance Metrics
-    database_queries = models.IntegerField(default=0)
-    cache_hits = models.IntegerField(default=0)
-    cache_misses = models.IntegerField(default=0)
+    # Network Information
+    ip_address = models.GenericIPAddressField()
+    user_agent = models.TextField(blank=True)
+    referer = models.URLField(blank=True)
     
     # Rate Limiting
+    rate_limit_key = models.CharField(max_length=100, blank=True)
     rate_limit_remaining = models.IntegerField(null=True, blank=True)
-    rate_limit_reset = models.DateTimeField(null=True, blank=True)
-    rate_limited = models.BooleanField(default=False)
     
     # Error Information
     is_error = models.BooleanField(default=False)
@@ -427,73 +483,71 @@ class APIUsageLog(TenantBaseModel):
     error_message = models.TextField(blank=True)
     
     # Business Context
-    records_returned = models.IntegerField(null=True, blank=True)
-    records_modified = models.IntegerField(null=True, blank=True)
+    affected_resources = models.JSONField(default=list, blank=True)
+    operation_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('READ', 'Read'),
+            ('WRITE', 'Write'),
+            ('DELETE', 'Delete'),
+            ('SEARCH', 'Search'),
+            ('BULK', 'Bulk Operation'),
+            ('EXPORT', 'Export'),
+            ('IMPORT', 'Import'),
+        ],
+        blank=True
+    )
     
     class Meta:
         ordering = ['-request_time']
         indexes = [
-            models.Index(fields=['tenant', 'api_name', 'request_time']),
-            models.Index(fields=['tenant', 'user', 'request_time']),
-            models.Index(fields=['tenant', 'is_error', 'request_time']),
-            models.Index(fields=['tenant', 'response_status_code']),
+            models.Index(fields=['tenant', 'request_time']),
+            models.Index(fields=['tenant', 'user']),
+            models.Index(fields=['tenant', 'endpoint']),
+            models.Index(fields=['tenant', 'status_code']),
+            models.Index(fields=['tenant', 'is_error']),
+            models.Index(fields=['tenant', 'api_key']),
         ]
         
     def __str__(self):
-        user_str = self.user.email if self.user else 'API Key'
-        return f'{self.method} {self.endpoint} - {user_str} ({self.response_status_code})'
+        return f'{self.method} {self.endpoint} - {self.status_code}'
+    
+    @property
+    def is_successful(self):
+        """Check if request was successful"""
+        return 200 <= self.status_code < 300
     
     @classmethod
-    def log_api_call(cls, tenant, request, response, user=None, api_key=None, 
-                     performance_data=None):
-        """Log an API call"""
+    def log_request(cls, tenant, request, response, user=None, api_key=None, 
+                   operation_type=None, affected_resources=None):
+        """Helper method to log API requests"""
         import time
         
-        # Calculate response time
-        start_time = getattr(request, '_start_time', time.time())
-        response_time_ms = (time.time() - start_time) * 1000
+        # Calculate response time if available
+        response_time = 0
+        if hasattr(request, '_request_start_time'):
+            response_time = int((time.time() - request._request_start_time) * 1000)
         
-        log_data = {
-            'tenant': tenant,
-            'api_name': request.resolver_match.app_name or 'api',
-            'endpoint': request.path,
-            'method': request.method,
-            'user': user,
-            'api_key': api_key,
-            'client_ip': cls._get_client_ip(request),
-            'user_agent': request.META.get('HTTP_USER_AGENT', '')[:500],
-            'response_status_code': response.status_code,
-            'response_time_ms': response_time_ms,
-            'is_error': response.status_code >= 400,
-        }
-        
-        # Request details
-        if hasattr(request, 'body'):
-            log_data['request_size_bytes'] = len(request.body)
-        
-        # Response details
-        if hasattr(response, 'content'):
-            log_data['response_size_bytes'] = len(response.content)
-        
-        # Performance data
-        if performance_data:
-            log_data.update(performance_data)
-        
-        return cls.objects.create(**log_data)
-    
-    @staticmethod
-    def _get_client_ip(request):
-        """Get client IP address from request"""
-        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
-        return ip
+        return cls.objects.create(
+            tenant=tenant,
+            method=request.method,
+            endpoint=request.path,
+            user=user,
+            api_key=api_key or '',
+            query_params=dict(request.GET),
+            status_code=response.status_code,
+            response_time_ms=response_time,
+            ip_address=request.META.get('REMOTE_ADDR', ''),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+            referer=request.META.get('HTTP_REFERER', ''),
+            is_error=response.status_code >= 400,
+            operation_type=operation_type or '',
+            affected_resources=affected_resources or []
+        )
 
 
 class SyncLog(TenantBaseModel):
-    """Enhanced data synchronization tracking"""
+    """Track data synchronization with external systems"""
     
     SYNC_TYPES = [
         ('IMPORT', 'Data Import'),
@@ -509,37 +563,46 @@ class SyncLog(TenantBaseModel):
         ('PENDING', 'Pending'),
         ('RUNNING', 'Running'),
         ('COMPLETED', 'Completed'),
-        ('COMPLETED_WITH_ERRORS', 'Completed with Errors'),
         ('FAILED', 'Failed'),
         ('CANCELLED', 'Cancelled'),
-        ('PAUSED', 'Paused'),
+        ('PARTIAL', 'Partially Completed'),
     ]
     
-    # Sync Information
+    # Sync Identification
+    sync_id = models.UUIDField(default=uuid.uuid4, unique=True)
     sync_type = models.CharField(max_length=20, choices=SYNC_TYPES)
-    sync_name = models.CharField(max_length=255)
-    source = models.CharField(max_length=100)
-    destination = models.CharField(max_length=100)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
     
-    # Status & Timing
-    status = models.CharField(max_length=25, choices=SYNC_STATUS, default='PENDING')
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-    duration_seconds = models.FloatField(null=True, blank=True)
+    # Source and Destination
+    source_system = models.CharField(max_length=100)
+    destination_system = models.CharField(max_length=100)
+    entity_type = models.CharField(max_length=50, blank=True)
     
-    # User Information
-    initiated_by = models.ForeignKey(
+    # Trigger Information
+    triggered_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='initiated_syncs'
+        related_name='triggered_syncs'
+    )
+    trigger_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('MANUAL', 'Manual'),
+            ('SCHEDULED', 'Scheduled'),
+            ('WEBHOOK', 'Webhook'),
+            ('API', 'API Call'),
+            ('EVENT', 'Event Triggered'),
+        ],
+        default='MANUAL'
     )
     
-    # Configuration
-    sync_configuration = models.JSONField(default=dict)
-    filters_applied = models.JSONField(default=dict)
-    mapping_rules = models.JSONField(default=dict)
+    # Status and Timing
+    status = models.CharField(max_length=15, choices=SYNC_STATUS, default='PENDING')
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
     
     # Progress Tracking
     total_records = models.IntegerField(default=0)
@@ -548,102 +611,40 @@ class SyncLog(TenantBaseModel):
     failed_records = models.IntegerField(default=0)
     skipped_records = models.IntegerField(default=0)
     
-    # Results
-    sync_summary = models.JSONField(default=dict)
-    records_created = models.IntegerField(default=0)
-    records_updated = models.IntegerField(default=0)
-    records_deleted = models.IntegerField(default=0)
+    # Configuration
+    sync_config = models.JSONField(default=dict, blank=True)
+    field_mappings = models.JSONField(default=dict, blank=True)
+    filters = models.JSONField(default=dict, blank=True)
     
-    # Error Tracking
-    error_details = models.JSONField(default=list)
-    warning_details = models.JSONField(default=list)
+    # Results and Errors
+    sync_summary = models.JSONField(default=dict, blank=True)
+    error_details = models.JSONField(default=list, blank=True)
+    success_details = models.JSONField(default=list, blank=True)
     
-    # File Information
-    source_file_path = models.CharField(max_length=500, blank=True)
-    output_file_path = models.CharField(max_length=500, blank=True)
-    log_file_path = models.CharField(max_length=500, blank=True)
+    # Performance Metrics
+    average_record_time_ms = models.IntegerField(default=0)
+    peak_memory_usage_mb = models.IntegerField(default=0)
+    data_volume_mb = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     
-    # Integration Details
-    external_system = models.CharField(max_length=100, blank=True)
-    external_sync_id = models.CharField(max_length=255, blank=True)
+    # Retry Logic
+    retry_count = models.IntegerField(default=0)
+    max_retries = models.IntegerField(default=3)
+    retry_delay_seconds = models.IntegerField(default=60)
+    next_retry_at = models.DateTimeField(null=True, blank=True)
     
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['-started_at', '-created_at']
         indexes = [
-            models.Index(fields=['tenant', 'sync_type', 'status']),
-            models.Index(fields=['tenant', 'initiated_by', 'started_at']),
-            models.Index(fields=['tenant', 'external_system']),
+            models.Index(fields=['tenant', 'sync_type']),
+            models.Index(fields=['tenant', 'status']),
+            models.Index(fields=['tenant', 'source_system']),
+            models.Index(fields=['tenant', 'destination_system']),
+            models.Index(fields=['tenant', 'entity_type']),
+            models.Index(fields=['sync_id']),
         ]
         
     def __str__(self):
-        return f'{self.sync_name} ({self.sync_type}): {self.source} → {self.destination}'
-    
-    def start_sync(self):
-        """Mark sync as started"""
-        self.status = 'RUNNING'
-        self.started_at = timezone.now()
-        self.save(update_fields=['status', 'started_at'])
-    
-    def update_progress(self, processed, successful=None, failed=None, skipped=None):
-        """Update sync progress"""
-        self.processed_records = processed
-        if successful is not None:
-            self.successful_records = successful
-        if failed is not None:
-            self.failed_records = failed
-        if skipped is not None:
-            self.skipped_records = skipped
-        
-        self.save(update_fields=[
-            'processed_records',
-            'successful_records', 
-            'failed_records',
-            'skipped_records'
-        ])
-    
-    def complete_sync(self, status='COMPLETED', summary=None):
-        """Mark sync as completed"""
-        self.status = status
-        self.completed_at = timezone.now()
-        
-        if self.started_at:
-            duration = self.completed_at - self.started_at
-            self.duration_seconds = duration.total_seconds()
-        
-        if summary:
-            self.sync_summary = summary
-        
-        self.save()
-    
-    def add_error(self, error_message, record_data=None, line_number=None):
-        """Add an error to the sync log"""
-        error_entry = {
-            'message': error_message,
-            'timestamp': timezone.now().isoformat(),
-            'record_data': record_data,
-            'line_number': line_number
-        }
-        
-        if not self.error_details:
-            self.error_details = []
-        
-        self.error_details.append(error_entry)
-        self.save(update_fields=['error_details'])
-    
-    def add_warning(self, warning_message, record_data=None, line_number=None):
-        """Add a warning to the sync log"""
-        warning_entry = {
-            'message': warning_message,
-            'timestamp': timezone.now().isoformat(),
-            'record_data': record_data,
-            'line_number': line_number
-        }
-        
-        if not self.warning_details:
-            self.warning_details = []
-        
-        self.warning_details.append(warning_entry)
-        self.save(update_fields=['warning_details'])
+        return f'{self.name} ({self.sync_type}) - {self.status}'
     
     @property
     def progress_percentage(self):
@@ -654,14 +655,149 @@ class SyncLog(TenantBaseModel):
     
     @property
     def success_rate(self):
-        """Calculate success rate"""
+        """Calculate success rate percentage"""
         if self.processed_records > 0:
             return (self.successful_records / self.processed_records) * 100
         return 0
     
     @property
-    def error_rate(self):
-        """Calculate error rate"""
-        if self.processed_records > 0:
-            return (self.failed_records / self.processed_records) * 100
+    def duration_seconds(self):
+        """Calculate sync duration in seconds"""
+        if self.started_at and self.completed_at:
+            return (self.completed_at - self.started_at).total_seconds()
+        elif self.started_at:
+            return (timezone.now() - self.started_at).total_seconds()
         return 0
+    
+    def update_progress(self, processed=None, successful=None, failed=None, skipped=None):
+        """Update sync progress"""
+        if processed is not None:
+            self.processed_records = processed
+        if successful is not None:
+            self.successful_records = successful
+        if failed is not None:
+            self.failed_records = failed
+        if skipped is not None:
+            self.skipped_records = skipped
+        
+        # Update status based on progress
+        if self.processed_records >= self.total_records:
+            if self.failed_records == 0:
+                self.status = 'COMPLETED'
+            elif self.successful_records > 0:
+                self.status = 'PARTIAL'
+            else:
+                self.status = 'FAILED'
+        
+        self.save()
+    
+    def add_error(self, record_id, error_message, error_details=None):
+        """Add error details for a specific record"""
+        error_entry = {
+            'record_id': record_id,
+            'error_message': error_message,
+            'error_details': error_details or {},
+            'timestamp': timezone.now().isoformat()
+        }
+        
+        if not isinstance(self.error_details, list):
+            self.error_details = []
+        
+        self.error_details.append(error_entry)
+        self.save()
+    
+    def add_success(self, record_id, details=None):
+        """Add success details for a specific record"""
+        success_entry = {
+            'record_id': record_id,
+            'details': details or {},
+            'timestamp': timezone.now().isoformat()
+        }
+        
+        if not isinstance(self.success_details, list):
+            self.success_details = []
+        
+        self.success_details.append(success_entry)
+        self.save()
+
+
+class SystemConfiguration(TenantBaseModel):
+    """Global system configuration settings"""
+    
+    CONFIG_TYPES = [
+        ('GENERAL', 'General Settings'),
+        ('EMAIL', 'Email Configuration'),
+        ('SECURITY', 'Security Settings'),
+        ('API', 'API Configuration'),
+        ('INTEGRATION', 'Integration Settings'),
+        ('NOTIFICATION', 'Notification Settings'),
+        ('WORKFLOW', 'Workflow Settings'),
+        ('REPORTING', 'Reporting Configuration'),
+    ]
+    
+    # Configuration Identity
+    config_type = models.CharField(max_length=20, choices=CONFIG_TYPES)
+    key = models.CharField(max_length=100)
+    display_name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    
+    # Value Storage
+    value = models.JSONField()
+    default_value = models.JSONField(null=True, blank=True)
+    
+    # Metadata
+    is_encrypted = models.BooleanField(default=False)
+    is_read_only = models.BooleanField(default=False)
+    is_system_config = models.BooleanField(default=False)
+    is_visible_in_ui = models.BooleanField(default=True)
+    
+    # Validation
+    validation_rules = models.JSONField(default=dict, blank=True)
+    
+    # Versioning
+    version = models.CharField(max_length=20, default='1.0')
+    last_modified_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='modified_configs'
+    )
+    
+    class Meta:
+        ordering = ['config_type', 'key']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'config_type', 'key'],
+                name='unique_tenant_system_config'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant', 'config_type']),
+            models.Index(fields=['tenant', 'is_system_config']),
+        ]
+        
+    def __str__(self):
+        return f'{self.config_type} - {self.display_name}'
+    
+    def get_value(self):
+        """Get configuration value with decryption if needed"""
+        if self.is_encrypted:
+            # TODO: Implement decryption logic
+            return self.value
+        return self.value
+    
+    def set_value(self, value):
+        """Set configuration value with encryption if needed"""
+        if self.is_encrypted:
+            # TODO: Implement encryption logic
+            self.value = value
+        else:
+            self.value = value
+        self.save()
+    
+    def reset_to_default(self):
+        """Reset configuration to default value"""
+        if self.default_value is not None:
+            self.value = self.default_value
+            self.save()

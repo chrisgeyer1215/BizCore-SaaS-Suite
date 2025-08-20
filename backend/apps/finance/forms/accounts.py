@@ -1,4 +1,4 @@
-# backend/apps/finance/forms/accounts.py
+backend/apps/finance/forms/accounts.py
 
 """
 Chart of Accounts Forms

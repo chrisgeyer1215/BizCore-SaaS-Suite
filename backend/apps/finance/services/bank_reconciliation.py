@@ -207,4 +207,3 @@ class BankReconciliationService(AccountingService):
     def create_reconciliation(self, bank_account: BankAccount, 
                             bank_statement: BankStatement,
                             reconciliation_date: date)
-        

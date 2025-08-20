@@ -89,6 +89,8 @@ class InvoiceItemForm(forms.ModelForm):
             self.fields['tax_code'].queryset = TaxCode.objects.filter(
                 tenant=self.tenant, is_active=True
             )
+
+
 # Create formset for invoice items
 InvoiceItemFormSet = inlineformset_factory(
     Invoice,

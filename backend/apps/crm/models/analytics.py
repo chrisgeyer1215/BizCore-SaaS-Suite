@@ -1,46 +1,149 @@
+# ============================================================================
+# backend/apps/crm/models/analytics.py - Analytics & Reporting Models
+# ============================================================================
+
+from django.db import models, transaction
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
+from django.utils import timezone
+from decimal import Decimal
+import uuid
+import json
+
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+
+User = get_user_model()
+
+
+class ReportCategory(TenantBaseModel, SoftDeleteMixin):
+    """Report categorization for better organization"""
+    
+    # Category Information
+    name = models.CharField(max_length=100)
+    code = models.CharField(max_length=50)
+    description = models.TextField(blank=True)
+    
+    # Hierarchy
+    parent = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='subcategories'
+    )
+    level = models.PositiveSmallIntegerField(default=0)
+    
+    # Display Settings
+    icon = models.CharField(max_length=100, blank=True)
+    color = models.CharField(max_length=7, blank=True)  # Hex color
+    sort_order = models.IntegerField(default=0)
+    
+    # Access Control
+    is_public = models.BooleanField(default=True)
+    restricted_roles = models.JSONField(default=list, blank=True)
+    
+    class Meta:
+        ordering = ['level', 'sort_order', 'name']
+        verbose_name = 'Report Category'
+        verbose_name_plural = 'Report Categories'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'code'],
+                name='unique_tenant_report_category_code'
+            ),
+        ]
+        
+    def __str__(self):
+        return self.name
+
+
 class Report(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced reporting system with custom parameters"""
+    """Comprehensive reporting system for CRM analytics"""
     
     REPORT_TYPES = [
-        ('SALES', 'Sales Report'),
-        ('MARKETING', 'Marketing Report'),
-        ('ACTIVITY', 'Activity Report'),
-        ('CUSTOMER', 'Customer Report'),
-        ('PIPELINE', 'Pipeline Report'),
-        ('PERFORMANCE', 'Performance Report'),
+        ('STANDARD', 'Standard Report'),
+        ('DASHBOARD', 'Dashboard Report'),
+        ('TABULAR', 'Tabular Report'),
+        ('CHART', 'Chart Report'),
+        ('PIVOT', 'Pivot Table'),
+        ('TREND', 'Trend Analysis'),
+        ('COMPARISON', 'Comparison Report'),
+        ('SUMMARY', 'Summary Report'),
+        ('DETAILED', 'Detailed Report'),
         ('CUSTOM', 'Custom Report'),
     ]
     
-    REPORT_FORMATS = [
-        ('TABLE', 'Table'),
-        ('CHART', 'Chart'),
-        ('GRAPH', 'Graph'),
-        ('DASHBOARD', 'Dashboard'),
+    DATA_SOURCES = [
+        ('LEADS', 'Leads'),
+        ('ACCOUNTS', 'Accounts'),
+        ('CONTACTS', 'Contacts'),
+        ('OPPORTUNITIES', 'Opportunities'),
+        ('ACTIVITIES', 'Activities'),
+        ('CAMPAIGNS', 'Campaigns'),
+        ('TICKETS', 'Support Tickets'),
+        ('PRODUCTS', 'Products'),
+        ('REVENUE', 'Revenue'),
+        ('FORECASTS', 'Sales Forecasts'),
+        ('PERFORMANCE', 'Performance Metrics'),
+        ('MIXED', 'Multiple Sources'),
     ]
     
-    # Report Information
+    VISUALIZATION_TYPES = [
+        ('TABLE', 'Data Table'),
+        ('BAR_CHART', 'Bar Chart'),
+        ('LINE_CHART', 'Line Chart'),
+        ('PIE_CHART', 'Pie Chart'),
+        ('DONUT_CHART', 'Donut Chart'),
+        ('AREA_CHART', 'Area Chart'),
+        ('SCATTER_PLOT', 'Scatter Plot'),
+        ('HISTOGRAM', 'Histogram'),
+        ('HEATMAP', 'Heat Map'),
+        ('GAUGE', 'Gauge Chart'),
+        ('FUNNEL', 'Funnel Chart'),
+        ('WATERFALL', 'Waterfall Chart'),
+        ('TREEMAP', 'Tree Map'),
+        ('BUBBLE_CHART', 'Bubble Chart'),
+        ('MIXED', 'Mixed Charts'),
+    ]
+    
+    # Basic Information
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    report_type = models.CharField(max_length=20, choices=REPORT_TYPES)
-    format = models.CharField(max_length=15, choices=REPORT_FORMATS, default='TABLE')
+    report_type = models.CharField(max_length=20, choices=REPORT_TYPES, default='STANDARD')
+    category = models.ForeignKey(
+        ReportCategory,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='reports'
+    )
+    
+    # Data Configuration
+    data_source = models.CharField(max_length=20, choices=DATA_SOURCES)
+    visualization_type = models.CharField(max_length=20, choices=VISUALIZATION_TYPES, default='TABLE')
     
     # Query Configuration
-    data_source = models.CharField(max_length=100)  # Model or view name
-    filters = models.JSONField(default=dict)
-    grouping = models.JSONField(default=list)
-    sorting = models.JSONField(default=list)
-    aggregations = models.JSONField(default=dict)
+    base_query = models.JSONField(default=dict)  # Base filters and conditions
+    columns = models.JSONField(default=list)  # Selected columns/fields
+    grouping = models.JSONField(default=list, blank=True)  # Group by fields
+    sorting = models.JSONField(default=list, blank=True)  # Sort order
+    filters = models.JSONField(default=list, blank=True)  # Dynamic filters
+    aggregations = models.JSONField(default=list, blank=True)  # Sum, Count, Avg, etc.
     
-    # Display Configuration
-    columns = models.JSONField(default=list)
-    chart_config = models.JSONField(default=dict)
+    # Visualization Settings
+    chart_config = models.JSONField(default=dict, blank=True)
+    color_scheme = models.CharField(max_length=50, blank=True)
+    display_options = models.JSONField(default=dict, blank=True)
     
     # Access Control
     is_public = models.BooleanField(default=False)
-    owner = models.ForeignKey(
+    created_by = models.ForeignKey(
         User,
-        on_delete=models.CASCADE,
-        related_name='owned_reports'
+        on_delete=models.PROTECT,
+        related_name='created_reports'
     )
     shared_with = models.ManyToManyField(
         User,
@@ -49,11 +152,21 @@ class Report(TenantBaseModel, SoftDeleteMixin):
         blank=True
     )
     
+    # Performance
+    cache_duration_minutes = models.IntegerField(default=60)
+    last_generated = models.DateTimeField(null=True, blank=True)
+    generation_time_ms = models.IntegerField(default=0)
+    
+    # Usage Tracking
+    view_count = models.IntegerField(default=0)
+    last_viewed = models.DateTimeField(null=True, blank=True)
+    
     # Scheduling
     is_scheduled = models.BooleanField(default=False)
     schedule_frequency = models.CharField(
         max_length=20,
         choices=[
+            ('HOURLY', 'Hourly'),
             ('DAILY', 'Daily'),
             ('WEEKLY', 'Weekly'),
             ('MONTHLY', 'Monthly'),
@@ -62,56 +175,71 @@ class Report(TenantBaseModel, SoftDeleteMixin):
         blank=True
     )
     schedule_time = models.TimeField(null=True, blank=True)
-    last_run = models.DateTimeField(null=True, blank=True)
+    schedule_day_of_week = models.IntegerField(null=True, blank=True)  # 0=Monday
+    schedule_day_of_month = models.IntegerField(null=True, blank=True)
     next_run = models.DateTimeField(null=True, blank=True)
+    email_recipients = models.JSONField(default=list, blank=True)
     
-    # Performance
-    execution_time_seconds = models.FloatField(null=True, blank=True)
-    row_count = models.IntegerField(null=True, blank=True)
-    
-    # Usage Tracking
-    run_count = models.IntegerField(default=0)
-    last_accessed = models.DateTimeField(null=True, blank=True)
+    # Export Settings
+    export_formats = models.JSONField(default=list, blank=True)  # PDF, Excel, CSV
+    auto_export = models.BooleanField(default=False)
+    export_path = models.CharField(max_length=500, blank=True)
     
     class Meta:
-        ordering = ['name']
+        ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['tenant', 'report_type', 'owner']),
+            models.Index(fields=['tenant', 'data_source', 'is_active']),
+            models.Index(fields=['tenant', 'created_by']),
+            models.Index(fields=['tenant', 'category']),
             models.Index(fields=['tenant', 'is_scheduled']),
         ]
         
     def __str__(self):
         return self.name
     
-    def execute(self, user=None, parameters=None):
-        """Execute the report and return results"""
-        from .services import ReportingService
+    def generate_data(self, user_filters=None, date_range=None):
+        """Generate report data based on configuration"""
+        from ..services.analytics_service import ReportGeneratorService
         
-        service = ReportingService(self.tenant)
-        results = service.execute_report(self, user, parameters)
+        service = ReportGeneratorService(self.tenant)
+        return service.generate_report_data(self, user_filters, date_range)
+    
+    def can_view(self, user):
+        """Check if user can view this report"""
+        if self.is_public or self.created_by == user:
+            return True
         
-        # Update usage statistics
-        self.run_count += 1
-        self.last_accessed = timezone.now()
-        self.last_run = timezone.now()
-        self.save(update_fields=['run_count', 'last_accessed', 'last_run'])
+        return self.shared_with.filter(id=user.id).exists()
+    
+    def increment_view_count(self, user=None):
+        """Increment view count and update last viewed"""
+        self.view_count += 1
+        self.last_viewed = timezone.now()
+        self.save(update_fields=['view_count', 'last_viewed'])
         
-        return results
+        # Log the view
+        if user:
+            ReportView.objects.create(
+                tenant=self.tenant,
+                report=self,
+                viewed_by=user,
+                viewed_at=timezone.now()
+            )
 
 
 class ReportShare(TenantBaseModel):
-    """Report sharing permissions"""
+    """Report sharing permissions and settings"""
     
     PERMISSION_LEVELS = [
         ('VIEW', 'View Only'),
-        ('EDIT', 'Edit'),
-        ('ADMIN', 'Admin'),
+        ('EDIT', 'View and Edit'),
+        ('ADMIN', 'Full Access'),
     ]
     
     report = models.ForeignKey(
         Report,
         on_delete=models.CASCADE,
-        related_name='shares'
+        related_name='share_settings'
     )
     user = models.ForeignKey(
         User,
@@ -119,47 +247,58 @@ class ReportShare(TenantBaseModel):
         related_name='report_shares'
     )
     permission_level = models.CharField(max_length=10, choices=PERMISSION_LEVELS, default='VIEW')
+    shared_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='shared_reports_by_user'
+    )
+    shared_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
     
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=['report', 'user'],
-                name='unique_report_share'
+                name='unique_report_user_share'
             ),
         ]
         
     def __str__(self):
-        return f'{self.report.name} - {self.user.get_full_name()} ({self.permission_level})'
+        return f'{self.report.name} shared with {self.user.get_full_name()}'
 
 
 class Dashboard(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced dashboard management with widgets"""
+    """Interactive dashboards with multiple widgets"""
     
     DASHBOARD_TYPES = [
-        ('PERSONAL', 'Personal Dashboard'),
-        ('TEAM', 'Team Dashboard'),
         ('EXECUTIVE', 'Executive Dashboard'),
         ('SALES', 'Sales Dashboard'),
         ('MARKETING', 'Marketing Dashboard'),
-        ('SUPPORT', 'Support Dashboard'),
+        ('SERVICE', 'Customer Service Dashboard'),
+        ('PERFORMANCE', 'Performance Dashboard'),
+        ('OPERATIONAL', 'Operational Dashboard'),
+        ('PERSONAL', 'Personal Dashboard'),
+        ('TEAM', 'Team Dashboard'),
+        ('CUSTOM', 'Custom Dashboard'),
     ]
     
-    # Dashboard Information
+    # Basic Information
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
-    dashboard_type = models.CharField(max_length=20, choices=DASHBOARD_TYPES)
+    dashboard_type = models.CharField(max_length=20, choices=DASHBOARD_TYPES, default='CUSTOM')
     
     # Layout Configuration
     layout = models.JSONField(default=dict)  # Grid layout configuration
-    widgets = models.JSONField(default=list)  # Widget configurations
+    theme = models.CharField(max_length=50, default='default')
+    background_color = models.CharField(max_length=7, blank=True)
     
     # Access Control
-    is_default = models.BooleanField(default=False)
     is_public = models.BooleanField(default=False)
-    owner = models.ForeignKey(
+    is_default = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
         User,
-        on_delete=models.CASCADE,
-        related_name='owned_dashboards'
+        on_delete=models.PROTECT,
+        related_name='created_dashboards'
     )
     shared_with = models.ManyToManyField(
         User,
@@ -168,37 +307,31 @@ class Dashboard(TenantBaseModel, SoftDeleteMixin):
         blank=True
     )
     
-    # Refresh Settings
-    auto_refresh = models.BooleanField(default=True)
-    refresh_interval_seconds = models.IntegerField(default=300)  # 5 minutes
-    last_refresh = models.DateTimeField(null=True, blank=True)
+    # Settings
+    auto_refresh_interval = models.IntegerField(default=300)  # seconds
+    full_screen_mode = models.BooleanField(default=False)
     
     # Usage Tracking
     view_count = models.IntegerField(default=0)
     last_viewed = models.DateTimeField(null=True, blank=True)
     
     class Meta:
-        ordering = ['name']
+        ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['tenant', 'dashboard_type', 'owner']),
-            models.Index(fields=['tenant', 'is_default']),
+            models.Index(fields=['tenant', 'dashboard_type', 'is_active']),
+            models.Index(fields=['tenant', 'created_by']),
+            models.Index(fields=['tenant', 'is_public']),
         ]
         
     def __str__(self):
         return self.name
     
-    def add_widget(self, widget_config):
-        """Add a widget to the dashboard"""
-        if not self.widgets:
-            self.widgets = []
-        self.widgets.append(widget_config)
-        self.save(update_fields=['widgets'])
-    
-    def remove_widget(self, widget_id):
-        """Remove a widget from the dashboard"""
-        if self.widgets:
-            self.widgets = [w for w in self.widgets if w.get('id') != widget_id]
-            self.save(update_fields=['widgets'])
+    def can_view(self, user):
+        """Check if user can view this dashboard"""
+        if self.is_public or self.created_by == user:
+            return True
+        
+        return self.shared_with.filter(id=user.id).exists()
 
 
 class DashboardShare(TenantBaseModel):
@@ -206,14 +339,14 @@ class DashboardShare(TenantBaseModel):
     
     PERMISSION_LEVELS = [
         ('VIEW', 'View Only'),
-        ('EDIT', 'Edit'),
-        ('ADMIN', 'Admin'),
+        ('EDIT', 'View and Edit'),
+        ('ADMIN', 'Full Access'),
     ]
     
     dashboard = models.ForeignKey(
         Dashboard,
         on_delete=models.CASCADE,
-        related_name='shares'
+        related_name='share_settings'
     )
     user = models.ForeignKey(
         User,
@@ -221,131 +354,185 @@ class DashboardShare(TenantBaseModel):
         related_name='dashboard_shares'
     )
     permission_level = models.CharField(max_length=10, choices=PERMISSION_LEVELS, default='VIEW')
+    shared_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='shared_dashboards_by_user'
+    )
+    shared_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=['dashboard', 'user'],
-                name='unique_dashboard_share'
+                name='unique_dashboard_user_share'
             ),
         ]
         
     def __str__(self):
-        return f'{self.dashboard.name} - {self.user.get_full_name()} ({self.permission_level})'
+        return f'{self.dashboard.name} shared with {self.user.get_full_name()}'
+
+
+class DashboardWidget(TenantBaseModel, SoftDeleteMixin):
+    """Individual widgets within dashboards"""
+    
+    WIDGET_TYPES = [
+        ('METRIC', 'Key Metric'),
+        ('CHART', 'Chart Widget'),
+        ('TABLE', 'Data Table'),
+        ('LIST', 'List Widget'),
+        ('PROGRESS', 'Progress Bar'),
+        ('GAUGE', 'Gauge Chart'),
+        ('MAP', 'Geographic Map'),
+        ('TIMELINE', 'Timeline'),
+        ('CALENDAR', 'Calendar'),
+        ('FEED', 'Activity Feed'),
+        ('IFRAME', 'External Content'),
+        ('TEXT', 'Text/HTML'),
+        ('IMAGE', 'Image Widget'),
+        ('CUSTOM', 'Custom Widget'),
+    ]
+    
+    dashboard = models.ForeignKey(
+        Dashboard,
+        on_delete=models.CASCADE,
+        related_name='widgets'
+    )
+    report = models.ForeignKey(
+        Report,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='dashboard_widgets'
+    )
+    
+    # Widget Configuration
+    title = models.CharField(max_length=255)
+    widget_type = models.CharField(max_length=20, choices=WIDGET_TYPES)
+    description = models.TextField(blank=True)
+    
+    # Layout and Position
+    position_x = models.IntegerField(default=0)
+    position_y = models.IntegerField(default=0)
+    width = models.IntegerField(default=4)
+    height = models.IntegerField(default=3)
+    z_index = models.IntegerField(default=1)
+    
+    # Display Settings
+    background_color = models.CharField(max_length=7, blank=True)
+    border_color = models.CharField(max_length=7, blank=True)
+    text_color = models.CharField(max_length=7, blank=True)
+    font_size = models.IntegerField(default=14)
+    
+    # Data Configuration
+    data_config = models.JSONField(default=dict)
+    filters = models.JSONField(default=dict, blank=True)
+    refresh_interval = models.IntegerField(default=300)  # seconds
+    
+    # Widget Settings
+    show_title = models.BooleanField(default=True)
+    show_border = models.BooleanField(default=True)
+    is_resizable = models.BooleanField(default=True)
+    is_draggable = models.BooleanField(default=True)
+    
+    # Caching
+    cache_enabled = models.BooleanField(default=True)
+    last_updated = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        ordering = ['dashboard', 'position_y', 'position_x']
+        indexes = [
+            models.Index(fields=['tenant', 'dashboard']),
+            models.Index(fields=['tenant', 'widget_type']),
+        ]
+        
+    def __str__(self):
+        return f'{self.dashboard.name} - {self.title}'
 
 
 class Forecast(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced sales forecasting with AI/ML integration"""
+    """Sales forecasting and predictive analytics"""
     
     FORECAST_TYPES = [
         ('REVENUE', 'Revenue Forecast'),
-        ('UNITS', 'Units Forecast'),
+        ('SALES_VOLUME', 'Sales Volume Forecast'),
         ('PIPELINE', 'Pipeline Forecast'),
-        ('QUOTA', 'Quota Forecast'),
+        ('QUOTA', 'Quota Achievement'),
+        ('TERRITORY', 'Territory Forecast'),
+        ('PRODUCT', 'Product Forecast'),
+        ('TEAM', 'Team Performance'),
+        ('INDIVIDUAL', 'Individual Performance'),
+        ('QUARTERLY', 'Quarterly Forecast'),
+        ('ANNUAL', 'Annual Forecast'),
     ]
     
-    FORECAST_PERIODS = [
+    FORECAST_METHODS = [
+        ('HISTORICAL', 'Historical Trend'),
+        ('PIPELINE', 'Pipeline Analysis'),
+        ('REGRESSION', 'Linear Regression'),
+        ('MOVING_AVERAGE', 'Moving Average'),
+        ('EXPONENTIAL', 'Exponential Smoothing'),
+        ('MACHINE_LEARNING', 'ML Algorithm'),
+        ('MANUAL', 'Manual Input'),
+        ('HYBRID', 'Hybrid Method'),
+    ]
+    
+    PERIOD_TYPES = [
+        ('WEEKLY', 'Weekly'),
         ('MONTHLY', 'Monthly'),
         ('QUARTERLY', 'Quarterly'),
         ('ANNUALLY', 'Annually'),
     ]
     
-    # Forecast Information
+    # Basic Information
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     forecast_type = models.CharField(max_length=20, choices=FORECAST_TYPES)
-    period_type = models.CharField(max_length=15, choices=FORECAST_PERIODS)
     
-    # Time Period
+    # Forecast Configuration
+    method = models.CharField(max_length=20, choices=FORECAST_METHODS, default='PIPELINE')
+    period_type = models.CharField(max_length=15, choices=PERIOD_TYPES, default='MONTHLY')
+    forecast_horizon_periods = models.IntegerField(default=12)
+    
+    # Time Range
     start_date = models.DateField()
     end_date = models.DateField()
-    forecast_date = models.DateField()  # When forecast was created
     
-    # Forecasted Values
-    forecasted_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        default=Decimal('0.00')
-    )
-    best_case_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
+    # Target Configuration
+    target_user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
         null=True,
-        blank=True
+        blank=True,
+        related_name='individual_forecasts'
     )
-    worst_case_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        null=True,
-        blank=True
-    )
+    target_team = models.CharField(max_length=255, blank=True)
+    target_territory = models.CharField(max_length=255, blank=True)
+    target_product = models.CharField(max_length=255, blank=True)
     
-    # Actual Results (for accuracy tracking)
-    actual_amount = models.DecimalField(
-        max_digits=15,
-        decimal_places=2,
-        null=True,
-        blank=True
-    )
-    
-    # Methodology
-    methodology = models.CharField(
-        max_length=20,
-        choices=[
-            ('MANUAL', 'Manual'),
-            ('PIPELINE', 'Pipeline Based'),
-            ('HISTORICAL', 'Historical Trending'),
-            ('ML', 'Machine Learning'),
-            ('HYBRID', 'Hybrid Approach'),
-        ],
-        default='MANUAL'
-    )
-    
-    # Confidence & Accuracy
+    # Model Parameters
+    historical_periods = models.IntegerField(default=12)
     confidence_level = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        validators=[MinValueValidator(0), MaxValueValidator(100)],
-        default=Decimal('50.00')
+        default=Decimal('95.00'),
+        validators=[MinValueValidator(50), MaxValueValidator(99.99)]
     )
-    accuracy_percentage = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True
-    )
+    seasonality_enabled = models.BooleanField(default=True)
+    trend_analysis = models.BooleanField(default=True)
     
-    # Ownership & Territory
-    owner = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        related_name='owned_forecasts'
-    )
-    territory = models.ForeignKey(
-        'Territory',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='forecasts'
-    )
-    team = models.ForeignKey(
-        'Team',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='forecasts'
-    )
+    # Results
+    forecast_data = models.JSONField(default=dict)
+    accuracy_metrics = models.JSONField(default=dict, blank=True)
+    confidence_intervals = models.JSONField(default=dict, blank=True)
     
-    # Breakdown Data
-    breakdown_data = models.JSONField(default=dict)  # Detailed breakdown by product, rep, etc.
-    assumptions = models.TextField(blank=True)
-    risk_factors = models.TextField(blank=True)
+    # Status
+    is_active = models.BooleanField(default=True)
+    last_calculated = models.DateTimeField(null=True, blank=True)
+    calculation_time_ms = models.IntegerField(default=0)
     
-    # Approval Workflow
-    is_submitted = models.BooleanField(default=False)
-    is_approved = models.BooleanField(default=False)
-    submitted_date = models.DateTimeField(null=True, blank=True)
-    approved_date = models.DateTimeField(null=True, blank=True)
+    # Approval
+    requires_approval = models.BooleanField(default=False)
     approved_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -353,160 +540,473 @@ class Forecast(TenantBaseModel, SoftDeleteMixin):
         blank=True,
         related_name='approved_forecasts'
     )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    
+    # Auto-update
+    auto_recalculate = models.BooleanField(default=True)
+    recalculate_frequency_days = models.IntegerField(default=7)
+    next_calculation = models.DateTimeField(null=True, blank=True)
     
     class Meta:
-        ordering = ['-forecast_date']
+        ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['tenant', 'forecast_type', 'period_type']),
-            models.Index(fields=['tenant', 'owner', 'start_date']),
-            models.Index(fields=['tenant', 'territory']),
+            models.Index(fields=['tenant', 'forecast_type', 'is_active']),
+            models.Index(fields=['tenant', 'target_user']),
+            models.Index(fields=['tenant', 'method']),
+            models.Index(fields=['tenant', 'last_calculated']),
         ]
         
     def __str__(self):
-        return f'{self.name} - {self.start_date} to {self.end_date}'
+        return self.name
     
-    def calculate_accuracy(self):
-        """Calculate forecast accuracy when actual results are available"""
-        if self.actual_amount is not None and self.forecasted_amount > 0:
-            variance = abs(self.actual_amount - self.forecasted_amount)
-            self.accuracy_percentage = max(0, 100 - ((variance / self.forecasted_amount) * 100))
-            self.save(update_fields=['accuracy_percentage'])
+    def calculate_forecast(self):
+        """Calculate forecast using specified method"""
+        from ..services.forecast_service import ForecastService
+        
+        service = ForecastService(self.tenant)
+        result = service.calculate_forecast(self)
+        
+        self.forecast_data = result.get('forecast_data', {})
+        self.accuracy_metrics = result.get('accuracy_metrics', {})
+        self.confidence_intervals = result.get('confidence_intervals', {})
+        self.last_calculated = timezone.now()
+        self.calculation_time_ms = result.get('calculation_time_ms', 0)
+        
+        if self.auto_recalculate:
+            self.next_calculation = timezone.now() + timezone.timedelta(days=self.recalculate_frequency_days)
+        
+        self.save()
+        return result
     
     @property
-    def variance_amount(self):
-        """Calculate variance between forecast and actual"""
-        if self.actual_amount is not None:
-            return self.actual_amount - self.forecasted_amount
-        return None
-    
-    @property
-    def variance_percentage(self):
-        """Calculate variance percentage"""
-        if self.actual_amount is not None and self.forecasted_amount > 0:
-            return ((self.actual_amount - self.forecasted_amount) / self.forecasted_amount) * 100
-        return None
+    def accuracy_score(self):
+        """Get overall accuracy score"""
+        return self.accuracy_metrics.get('overall_accuracy', 0)
 
 
-class PerformanceMetric(TenantBaseModel):
-    """Enhanced performance metrics tracking"""
+class PerformanceMetric(TenantBaseModel, SoftDeleteMixin):
+    """KPI and performance metric definitions"""
     
     METRIC_TYPES = [
-        ('REVENUE', 'Revenue'),
-        ('LEADS', 'Leads'),
-        ('CONVERSION', 'Conversion Rate'),
-        ('ACTIVITY', 'Activity Count'),
-        ('SATISFACTION', 'Customer Satisfaction'),
-        ('RESPONSE_TIME', 'Response Time'),
-        ('RESOLUTION_TIME', 'Resolution Time'),
-        ('QUOTA_ATTAINMENT', 'Quota Attainment'),
+        ('REVENUE', 'Revenue Metric'),
+        ('SALES', 'Sales Metric'),
+        ('MARKETING', 'Marketing Metric'),
+        ('SERVICE', 'Service Metric'),
+        ('EFFICIENCY', 'Efficiency Metric'),
+        ('QUALITY', 'Quality Metric'),
+        ('GROWTH', 'Growth Metric'),
+        ('RETENTION', 'Retention Metric'),
+        ('CONVERSION', 'Conversion Metric'),
+        ('ENGAGEMENT', 'Engagement Metric'),
+        ('COST', 'Cost Metric'),
+        ('PRODUCTIVITY', 'Productivity Metric'),
     ]
     
-    AGGREGATION_TYPES = [
+    CALCULATION_METHODS = [
         ('SUM', 'Sum'),
-        ('AVERAGE', 'Average'),
         ('COUNT', 'Count'),
-        ('MAX', 'Maximum'),
-        ('MIN', 'Minimum'),
+        ('AVERAGE', 'Average'),
         ('PERCENTAGE', 'Percentage'),
+        ('RATIO', 'Ratio'),
+        ('MEDIAN', 'Median'),
+        ('MIN', 'Minimum'),
+        ('MAX', 'Maximum'),
+        ('GROWTH_RATE', 'Growth Rate'),
+        ('VARIANCE', 'Variance'),
+        ('CUSTOM', 'Custom Formula'),
     ]
     
-    # Metric Definition
+    FREQUENCY_OPTIONS = [
+        ('REAL_TIME', 'Real-time'),
+        ('HOURLY', 'Hourly'),
+        ('DAILY', 'Daily'),
+        ('WEEKLY', 'Weekly'),
+        ('MONTHLY', 'Monthly'),
+        ('QUARTERLY', 'Quarterly'),
+        ('ANNUALLY', 'Annually'),
+    ]
+    
+    # Basic Information
     name = models.CharField(max_length=255)
+    display_name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     metric_type = models.CharField(max_length=20, choices=METRIC_TYPES)
-    aggregation_type = models.CharField(max_length=15, choices=AGGREGATION_TYPES)
     
-    # Time Period
-    period_start = models.DateField()
-    period_end = models.DateField()
+    # Calculation Configuration
+    calculation_method = models.CharField(max_length=20, choices=CALCULATION_METHODS)
+    formula = models.TextField(blank=True)  # Custom formula if needed
+    data_source = models.CharField(max_length=100)
+    source_fields = models.JSONField(default=list)
+    filters = models.JSONField(default=dict, blank=True)
     
-    # Metric Values
+    # Display Settings
+    unit = models.CharField(max_length=50, blank=True)  # $, %, units, etc.
+    decimal_places = models.IntegerField(default=2)
+    format_style = models.CharField(
+        max_length=20,
+        choices=[
+            ('NUMBER', 'Number'),
+            ('CURRENCY', 'Currency'),
+            ('PERCENTAGE', 'Percentage'),
+            ('DURATION', 'Duration'),
+            ('CUSTOM', 'Custom'),
+        ],
+        default='NUMBER'
+    )
+    
+    # Target and Benchmarks
     target_value = models.DecimalField(
         max_digits=15,
         decimal_places=2,
         null=True,
         blank=True
     )
-    actual_value = models.DecimalField(
+    benchmark_value = models.DecimalField(
         max_digits=15,
         decimal_places=2,
-        default=Decimal('0.00')
+        null=True,
+        blank=True
     )
-    previous_period_value = models.DecimalField(
+    threshold_red = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    threshold_yellow = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    threshold_green = models.DecimalField(
         max_digits=15,
         decimal_places=2,
         null=True,
         blank=True
     )
     
-    # Entity Association
-    user = models.ForeignKey(
-        User,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='performance_metrics'
-    )
-    team = models.ForeignKey(
-        'Team',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='performance_metrics'
-    )
-    territory = models.ForeignKey(
-        'Territory',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='performance_metrics'
-    )
-    
-    # Calculation Details
-    calculation_method = models.TextField(blank=True)
-    data_sources = models.JSONField(default=list)
-    filters_applied = models.JSONField(default=dict)
-    
-    # Status
-    is_current = models.BooleanField(default=True)
+    # Calculation Settings
+    calculation_frequency = models.CharField(max_length=15, choices=FREQUENCY_OPTIONS, default='DAILY')
     last_calculated = models.DateTimeField(null=True, blank=True)
+    next_calculation = models.DateTimeField(null=True, blank=True)
+    
+    # Current Values
+    current_value = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    previous_value = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    trend_direction = models.CharField(
+        max_length=10,
+        choices=[('UP', 'Up'), ('DOWN', 'Down'), ('FLAT', 'Flat')],
+        blank=True
+    )
+    
+    # Settings
+    is_kpi = models.BooleanField(default=False)
+    is_visible = models.BooleanField(default=True)
+    track_history = models.BooleanField(default=True)
+    
+    # Ownership
+    owner = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='owned_metrics'
+    )
     
     class Meta:
-        ordering = ['-period_end', 'name']
+        ordering = ['metric_type', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'name'],
+                name='unique_tenant_performance_metric'
+            ),
+        ]
         indexes = [
-            models.Index(fields=['tenant', 'metric_type', 'period_end']),
-            models.Index(fields=['tenant', 'user', 'period_end']),
-            models.Index(fields=['tenant', 'team', 'period_end']),
+            models.Index(fields=['tenant', 'metric_type', 'is_active']),
+            models.Index(fields=['tenant', 'is_kpi']),
+            models.Index(fields=['tenant', 'calculation_frequency']),
         ]
         
     def __str__(self):
-        entity = self.user or self.team or self.territory or 'Company'
-        return f'{self.name} - {entity} ({self.period_start} to {self.period_end})'
+        return self.display_name
+    
+    def calculate_value(self, date_range=None):
+        """Calculate metric value"""
+        from ..services.metrics_service import MetricsCalculationService
+        
+        service = MetricsCalculationService(self.tenant)
+        result = service.calculate_metric(self, date_range)
+        
+        self.previous_value = self.current_value
+        self.current_value = result.get('value')
+        self.trend_direction = result.get('trend_direction', 'FLAT')
+        self.last_calculated = timezone.now()
+        
+        # Schedule next calculation
+        if self.calculation_frequency != 'REAL_TIME':
+            from datetime import timedelta
+            frequency_map = {
+                'HOURLY': timedelta(hours=1),
+                'DAILY': timedelta(days=1),
+                'WEEKLY': timedelta(weeks=1),
+                'MONTHLY': timedelta(days=30),
+                'QUARTERLY': timedelta(days=90),
+                'ANNUALLY': timedelta(days=365),
+            }
+            if self.calculation_frequency in frequency_map:
+                self.next_calculation = timezone.now() + frequency_map[self.calculation_frequency]
+        
+        self.save()
+        
+        # Store historical value if tracking enabled
+        if self.track_history:
+            MetricHistory.objects.create(
+                tenant=self.tenant,
+                metric=self,
+                value=self.current_value,
+                calculated_at=self.last_calculated,
+                period_start=date_range.get('start') if date_range else None,
+                period_end=date_range.get('end') if date_range else None
+            )
+        
+        return result
     
     @property
-    def achievement_percentage(self):
-        """Calculate achievement percentage against target"""
-        if self.target_value and self.target_value > 0:
-            return (self.actual_value / self.target_value) * 100
-        return 0
+    def performance_status(self):
+        """Get performance status based on thresholds"""
+        if not self.current_value:
+            return 'UNKNOWN'
+        
+        if self.threshold_green and self.current_value >= self.threshold_green:
+            return 'GOOD'
+        elif self.threshold_yellow and self.current_value >= self.threshold_yellow:
+            return 'WARNING'
+        elif self.threshold_red:
+            return 'CRITICAL'
+        
+        return 'UNKNOWN'
     
     @property
-    def variance_from_target(self):
-        """Calculate variance from target"""
-        if self.target_value is not None:
-            return self.actual_value - self.target_value
+    def target_achievement(self):
+        """Calculate target achievement percentage"""
+        if self.target_value and self.current_value and self.target_value > 0:
+            return (self.current_value / self.target_value) * 100
         return None
+
+
+class MetricHistory(TenantBaseModel):
+    """Historical values for performance metrics"""
     
-    @property
-    def period_over_period_change(self):
-        """Calculate change from previous period"""
-        if self.previous_period_value is not None:
-            return self.actual_value - self.previous_period_value
-        return None
+    metric = models.ForeignKey(
+        PerformanceMetric,
+        on_delete=models.CASCADE,
+        related_name='history'
+    )
     
-    @property
-    def period_over_period_percentage(self):
-        """Calculate percentage change from previous period"""
-        if self.previous_period_value and self.previous_period_value > 0:
-            return ((self.actual_value - self.previous_period_value) / self.previous_period_value) * 100
-        return None
+    # Value Information
+    value = models.DecimalField(max_digits=15, decimal_places=2)
+    calculated_at = models.DateTimeField()
+    
+    # Period Information
+    period_start = models.DateTimeField(null=True, blank=True)
+    period_end = models.DateTimeField(null=True, blank=True)
+    
+    # Context
+    calculation_method = models.CharField(max_length=100, blank=True)
+    data_points = models.IntegerField(default=0)
+    
+    class Meta:
+        ordering = ['-calculated_at']
+        indexes = [
+            models.Index(fields=['tenant', 'metric', 'calculated_at']),
+            models.Index(fields=['tenant', 'period_start', 'period_end']),
+        ]
+        
+    def __str__(self):
+        return f'{self.metric.name} - {self.value} at {self.calculated_at}'
+
+
+class ReportView(TenantBaseModel):
+    """Track report views for analytics"""
+    
+    report = models.ForeignKey(
+        Report,
+        on_delete=models.CASCADE,
+        related_name='view_logs'
+    )
+    viewed_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='report_views'
+    )
+    viewed_at = models.DateTimeField()
+    
+    # Context Information
+    session_id = models.CharField(max_length=100, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    
+    # View Details
+    filters_applied = models.JSONField(default=dict, blank=True)
+    date_range = models.JSONField(default=dict, blank=True)
+    export_format = models.CharField(max_length=20, blank=True)
+    
+    class Meta:
+        ordering = ['-viewed_at']
+        indexes = [
+            models.Index(fields=['tenant', 'report', 'viewed_at']),
+            models.Index(fields=['tenant', 'viewed_by']),
+        ]
+        
+    def __str__(self):
+        return f'{self.report.name} viewed by {self.viewed_by.get_full_name()}'
+
+
+class AnalyticsConfiguration(TenantBaseModel):
+    """Analytics system configuration per tenant"""
+    
+    # Data Retention
+    data_retention_days = models.IntegerField(default=365)
+    archive_old_data = models.BooleanField(default=True)
+    
+    # Performance Settings
+    enable_caching = models.BooleanField(default=True)
+    cache_duration_minutes = models.IntegerField(default=60)
+    max_query_time_seconds = models.IntegerField(default=30)
+    
+    # Automation
+    auto_generate_reports = models.BooleanField(default=True)
+    auto_calculate_metrics = models.BooleanField(default=True)
+    send_alerts = models.BooleanField(default=True)
+    
+    # Export Settings
+    default_export_format = models.CharField(
+        max_length=10,
+        choices=[
+            ('PDF', 'PDF'),
+            ('EXCEL', 'Excel'),
+            ('CSV', 'CSV'),
+        ],
+        default='PDF'
+    )
+    max_export_rows = models.IntegerField(default=10000)
+    
+    # Security
+    require_approval_for_sensitive_reports = models.BooleanField(default=True)
+    sensitive_fields = models.JSONField(default=list, blank=True)
+    
+    # Integration
+    external_analytics_enabled = models.BooleanField(default=False)
+    external_analytics_config = models.JSONField(default=dict, blank=True)
+    
+    class Meta:
+        verbose_name = 'Analytics Configuration'
+        verbose_name_plural = 'Analytics Configurations'
+        
+    def __str__(self):
+        return f'Analytics Config - {self.tenant.name}'
+
+
+class AlertRule(TenantBaseModel, SoftDeleteMixin):
+    """Automated alerts based on metrics and thresholds"""
+    
+    ALERT_TYPES = [
+        ('METRIC_THRESHOLD', 'Metric Threshold'),
+        ('TREND_CHANGE', 'Trend Change'),
+        ('ANOMALY', 'Data Anomaly'),
+        ('TARGET_MISS', 'Target Miss'),
+        ('FORECAST_DEVIATION', 'Forecast Deviation'),
+        ('CUSTOM', 'Custom Rule'),
+    ]
+    
+    SEVERITY_LEVELS = [
+        ('LOW', 'Low'),
+        ('MEDIUM', 'Medium'),
+        ('HIGH', 'High'),
+        ('CRITICAL', 'Critical'),
+    ]
+    
+    # Rule Configuration
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    alert_type = models.CharField(max_length=20, choices=ALERT_TYPES)
+    severity = models.CharField(max_length=10, choices=SEVERITY_LEVELS, default='MEDIUM')
+    
+    # Target
+    metric = models.ForeignKey(
+        PerformanceMetric,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='alert_rules'
+    )
+    report = models.ForeignKey(
+        Report,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='alert_rules'
+    )
+    
+    # Conditions
+    conditions = models.JSONField(default=dict)
+    threshold_value = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    
+    # Notification Settings
+    notification_channels = models.JSONField(default=list)  # email, sms, slack, etc.
+    recipients = models.JSONField(default=list)
+    message_template = models.TextField(blank=True)
+    
+    # Timing
+    check_frequency_minutes = models.IntegerField(default=60)
+    last_checked = models.DateTimeField(null=True, blank=True)
+    last_triggered = models.DateTimeField(null=True, blank=True)
+    
+    # Settings
+    is_enabled = models.BooleanField(default=True)
+    suppress_duplicates = models.BooleanField(default=True)
+    suppression_period_minutes = models.IntegerField(default=60)
+    
+    class Meta:
+        ordering = ['severity', 'name']
+        indexes = [
+            models.Index(fields=['tenant', 'is_enabled', 'is_active']),
+            models.Index(fields=['tenant', 'metric']),
+            models.Index(fields=['tenant', 'last_checked']),
+        ]
+        
+    def __str__(self):
+        return self.name
+    
+    def check_conditions(self):
+        """Check if alert conditions are met"""
+        from ..services.alert_service import AlertService
+        
+        service = AlertService(self.tenant)
+        return service.check_alert_rule(self)
+    
+    def trigger_alert(self, context=None):
+        """Trigger alert notification"""
+        from ..services.alert_service import AlertService
+        
+        service = AlertService(self.tenant)
+        service.trigger_alert(self, context)
+        
+        self.last_triggered = timezone.now()
+        self.save(update_fields=['last_triggered'])

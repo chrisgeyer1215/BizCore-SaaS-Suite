@@ -68,47 +68,63 @@ class FinanceSettingsForm(forms.ModelForm):
         self.tenant = kwargs.pop('tenant', None)
         super().__init__(*args, **kwargs)
         
-        # Filter currencies by tenant
         if self.tenant:
-            self.fields['base_currency'].queryset = Currency.objects.filter(
+            self.fields['customer'].queryset = Customer.objects.filter(tenant=self.tenant)
+            self.fields['vendor'].queryset = Vendor.objects.filter(tenant=self.tenant)
+            self.fields['currency'].queryset = Currency.objects.filter(
                 tenant=self.tenant, is_active=True
             )
+            self.fields['bank_account'].queryset = Account.objects.filter(
+                tenant=self.tenant, is_bank_account=True, is_active=True
+            )
 
-    def clean_fiscal_year_start_month(self):
-        value = self.cleaned_data['fiscal_year_start_month']
-        if not 1 <= value <= 12:
-            raise ValidationError("Fiscal year start month must be between 1 and 12")
-        return value
+    def clean(self):
+        cleaned_data = super().clean()
+        payment_type = cleaned_data.get('payment_type')
+        customer = cleaned_data.get('customer')
+        vendor = cleaned_data.get('vendor')
+        
+        if payment_type == 'RECEIVED' and not customer:
+            raise ValidationError("Customer is required for received payments")
+        
+        if payment_type == 'MADE' and not vendor:
+            raise ValidationError("Vendor is required for made payments")
+        
+        if customer and vendor:
+            raise ValidationError("Payment cannot have both customer and vendor")
+        
+        return cleaned_data
 
-    def clean_currency_precision(self):
-        value = self.cleaned_data['currency_precision']
-        if not 0 <= value <= 8:
-            raise ValidationError("Currency precision must be between 0 and 8")
-        return value
 
-
-class FiscalYearForm(forms.ModelForm):
-    """Fiscal year form"""
+class PaymentApplicationForm(forms.ModelForm):
+    """Payment application form"""
     
     class Meta:
-        model = FiscalYear
-        fields = ['year', 'start_date', 'end_date', 'status']
+        model = PaymentApplication
+        fields = [
+            'invoice', 'bill', 'amount_applied', 'discount_amount', 'notes'
+        ]
         widgets = {
-            'year': forms.NumberInput(attrs={'class': 'form-control'}),
-            'start_date': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
-            'end_date': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
-            'status': forms.Select(attrs={'class': 'form-control'}),
+            'invoice': forms.Select(attrs={'class': 'form-control form-control-sm'}),
+            'bill': forms.Select(attrs={'class': 'form-control form-control-sm'}),
+            'amount_applied': forms.NumberInput(attrs={'class': 'form-control form-control-sm', 'step': '0.01'}),
+            'discount_amount': forms.NumberInput(attrs={'class': 'form-control form-control-sm', 'step': '0.01'}),
+            'notes': forms.TextInput(attrs={'class': 'form-control form-control-sm'}),
         }
 
     def clean(self):
         cleaned_data = super().clean()
-        start_date = cleaned_data.get('start_date')
-        end_date = cleaned_data.get('end_date')
+        invoice = cleaned_data.get('invoice')
+        bill = cleaned_data.get('bill')
         
-        if start_date and end_date and start_date >= end_date:
-            raise ValidationError("Start date must be before end date")
+        if not invoice and not bill:
+            raise ValidationError("Either invoice or bill must be selected")
+        
+        if invoice and bill:
+            raise ValidationError("Cannot apply to both invoice and bill")
         
         return cleaned_data
+
 
 # Create formset for payment applications
 PaymentApplicationFormSet = inlineformset_factory(
