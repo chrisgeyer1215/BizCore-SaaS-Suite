@@ -2,25 +2,38 @@
 
 """
 Finance Module URL Configuration
+Complete API routing for all finance functionality
 """
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-
-from .views import (
-    FinanceDashboardViewSet,
-    AccountCategoryViewSet,
-    AccountViewSet,
+from .viewsets import (
+    # Core
+    FinanceSettingsViewSet, FiscalYearViewSet, FinancialPeriodViewSet,
+    
+    # Accounts & Chart
+    AccountCategoryViewSet, AccountViewSet,
+    
+    # Currency & Tax
+    CurrencyViewSet, ExchangeRateViewSet, TaxCodeViewSet, TaxGroupViewSet,
+    
+    # Journal Entries
     JournalEntryViewSet,
-    BankAccountViewSet,
-    BankReconciliationViewSet,
+    
+    # Invoices & Sales
     InvoiceViewSet,
-    BillViewSet,
+    
+    # Payments
     PaymentViewSet,
-    VendorViewSet,
-    CustomerFinancialViewSet,
-    FinancialReportsViewSet,
-    FinanceSettingsViewSet
+    
+    # Vendors & Purchases
+    VendorViewSet, BillViewSet,
+    
+    # Bank & Reconciliation
+    BankAccountViewSet, BankStatementViewSet, BankReconciliationViewSet,
+    
+    # Reports & Dashboard
+    FinancialReportsViewSet, FinanceDashboardViewSet,
 )
 
 app_name = 'finance'
@@ -28,359 +41,349 @@ app_name = 'finance'
 # Create router and register viewsets
 router = DefaultRouter()
 
-# Dashboard
-router.register(r'dashboard', FinanceDashboardViewSet, basename='dashboard')
-
-# Settings
+# Core Configuration
 router.register(r'settings', FinanceSettingsViewSet, basename='settings')
+router.register(r'fiscal-years', FiscalYearViewSet, basename='fiscal-years')
+router.register(r'financial-periods', FinancialPeriodViewSet, basename='financial-periods')
 
 # Chart of Accounts
 router.register(r'account-categories', AccountCategoryViewSet, basename='account-categories')
 router.register(r'accounts', AccountViewSet, basename='accounts')
 
+# Currency & Tax
+router.register(r'currencies', CurrencyViewSet, basename='currencies')
+router.register(r'exchange-rates', ExchangeRateViewSet, basename='exchange-rates')
+router.register(r'tax-codes', TaxCodeViewSet, basename='tax-codes')
+router.register(r'tax-groups', TaxGroupViewSet, basename='tax-groups')
+
 # Journal Entries
 router.register(r'journal-entries', JournalEntryViewSet, basename='journal-entries')
 
-# Banking
-router.register(r'bank-accounts', BankAccountViewSet, basename='bank-accounts')
-router.register(r'bank-reconciliations', BankReconciliationViewSet, basename='bank-reconciliations')
-
-# Sales & Receivables
+# Invoices & Sales
 router.register(r'invoices', InvoiceViewSet, basename='invoices')
-
-# Purchases & Payables
-router.register(r'vendors', VendorViewSet, basename='vendors')
-router.register(r'bills', BillViewSet, basename='bills')
 
 # Payments
 router.register(r'payments', PaymentViewSet, basename='payments')
 
-# Customer Financial Data
-router.register(r'customer-financials', CustomerFinancialViewSet, basename='customer-financials')
+# Vendors & Purchases
+router.register(r'vendors', VendorViewSet, basename='vendors')
+router.register(r'bills', BillViewSet, basename='bills')
 
-# Reports
+# Bank & Reconciliation
+router.register(r'bank-accounts', BankAccountViewSet, basename='bank-accounts')
+router.register(r'bank-statements', BankStatementViewSet, basename='bank-statements')
+router.register(r'bank-reconciliations', BankReconciliationViewSet, basename='bank-reconciliations')
+
+# Reports & Dashboard
 router.register(r'reports', FinancialReportsViewSet, basename='reports')
+router.register(r'dashboard', FinanceDashboardViewSet, basename='dashboard')
 
 urlpatterns = [
-    path('', include(router.urls)),
+    # API routes
+    path('api/', include(router.urls)),
     
     # Additional custom endpoints
-    path('api/v1/', include([
-        # Quick access endpoints
-        path('quick-invoice/', include('apps.finance.api.quick_invoice_urls')),
-        path('quick-payment/', include('apps.finance.api.quick_payment_urls')),
+    path('api/quick-actions/', include([
+        # Quick invoice creation
+        path('create-invoice/', InvoiceViewSet.as_view({'post': 'create_invoice'}), name='quick-create-invoice'),
         
-        # Bulk operations
-        path('bulk/', include('apps.finance.api.bulk_urls')),
+        # Quick payment entry
+        path('create-payment/', PaymentViewSet.as_view({'post': 'create_payment'}), name='quick-create-payment'),
         
-        # Import/Export
-        path('import/', include('apps.finance.api.import_urls')),
-        path('export/', include('apps.finance.api.export_urls')),
+        # Quick journal entry
+        path('create-journal-entry/', JournalEntryViewSet.as_view({'post': 'create_entry'}), name='quick-create-journal-entry'),
         
-        # Webhooks
-        path('webhooks/', include('apps.finance.api.webhook_urls')),
+        # Financial summary
+        path('summary/', FinanceDashboardViewSet.as_view({'get': 'overview'}), name='financial-summary'),
+    ])),
+    
+    # Bulk operations
+    path('api/bulk/', include([
+        # Bulk invoice operations
+        path('invoices/send/', InvoiceViewSet.as_view({'post': 'send_invoices'}), name='bulk-send-invoices'),
+        path('invoices/approve/', InvoiceViewSet.as_view({'post': 'approve_invoices'}), name='bulk-approve-invoices'),
+        
+        # Bulk journal entry operations
+        path('journal-entries/post/', JournalEntryViewSet.as_view({'post': 'post_entries'}), name='bulk-post-journal-entries'),
+        
+        # Bulk account creation
+        path('accounts/create/', AccountViewSet.as_view({'post': 'bulk_create'}), name='bulk-create-accounts'),
+    ])),
+    
+    # Integration endpoints
+    path('api/integrations/', include([
+        # Bank feed sync
+        path('bank-feeds/sync/', BankStatementViewSet.as_view({'post': 'sync_bank_feeds'}), name='sync-bank-feeds'),
+        
+        # Auto-matching
+        path('auto-match/bank-transactions/', BankStatementViewSet.as_view({'post': 'auto_match_transactions'}), name='auto-match-bank-transactions'),
+        
+        # Inventory integration
+        path('inventory/sync-costs/', include('apps.finance.integrations.inventory_urls')),
+        
+        # CRM integration
+        path('crm/sync-customers/', include('apps.finance.integrations.crm_urls')),
+        
+        # E-commerce integration
+        path('ecommerce/sync-orders/', include('apps.finance.integrations.ecommerce_urls')),
+    ])),
+    
+    # Export endpoints
+    path('api/exports/', include([
+        # Financial statements exports
+        path('balance-sheet/pdf/', FinancialReportsViewSet.as_view({'get': 'balance_sheet'}), {'format': 'pdf'}, name='export-balance-sheet-pdf'),
+        path('income-statement/pdf/', FinancialReportsViewSet.as_view({'get': 'income_statement'}), {'format': 'pdf'}, name='export-income-statement-pdf'),
+        path('cash-flow/pdf/', FinancialReportsViewSet.as_view({'get': 'cash_flow'}), {'format': 'pdf'}, name='export-cash-flow-pdf'),
+        
+        # Aging reports exports
+        path('ar-aging/pdf/', FinancialReportsViewSet.as_view({'get': 'ar_aging'}), {'format': 'pdf'}, name='export-ar-aging-pdf'),
+        path('ap-aging/pdf/', FinancialReportsViewSet.as_view({'get': 'ap_aging'}), {'format': 'pdf'}, name='export-ap-aging-pdf'),
+        
+        # Trial balance export
+        path('trial-balance/pdf/', FinancialReportsViewSet.as_view({'get': 'trial_balance'}), {'format': 'pdf'}, name='export-trial-balance-pdf'),
+        
+        # Data exports
+        path('chart-of-accounts/csv/', AccountViewSet.as_view({'get': 'export_csv'}), name='export-accounts-csv'),
+        path('journal-entries/csv/', JournalEntryViewSet.as_view({'get': 'export_csv'}), name='export-journal-entries-csv'),
+        path('invoices/csv/', InvoiceViewSet.as_view({'get': 'export_csv'}), name='export-invoices-csv'),
+        path('payments/csv/', PaymentViewSet.as_view({'get': 'export_csv'}), name='export-payments-csv'),
+    ])),
+    
+    # Workflow endpoints
+    path('api/workflows/', include([
+        # Invoice workflow
+        path('invoices/<int:pk>/approve/', InvoiceViewSet.as_view({'post': 'approve'}), name='approve-invoice'),
+        path('invoices/<int:pk>/send/', InvoiceViewSet.as_view({'post': 'send'}), name='send-invoice'),
+        path('invoices/<int:pk>/void/', InvoiceViewSet.as_view({'post': 'void'}), name='void-invoice'),
+        path('invoices/<int:pk>/send-reminder/', InvoiceViewSet.as_view({'post': 'send_reminder'}), name='send-invoice-reminder'),
+        
+        # Bill workflow
+        path('bills/<int:pk>/approve/', BillViewSet.as_view({'post': 'approve'}), name='approve-bill'),
+        
+        # Journal entry workflow
+        path('journal-entries/<int:pk>/post/', JournalEntryViewSet.as_view({'post': 'post_entry'}), name='post-journal-entry'),
+        path('journal-entries/<int:pk>/reverse/', JournalEntryViewSet.as_view({'post': 'reverse_entry'}), name='reverse-journal-entry'),
+        
+        # Payment workflow
+        path('payments/<int:pk>/apply-to-invoices/', PaymentViewSet.as_view({'post': 'apply_to_invoices'}), name='apply-payment-to-invoices'),
+        path('payments/<int:pk>/apply-to-bills/', PaymentViewSet.as_view({'post': 'apply_to_bills'}), name='apply-payment-to-bills'),
+        path('payments/<int:pk>/refund/', PaymentViewSet.as_view({'post': 'process_refund'}), name='process-payment-refund'),
+        
+        # Bank reconciliation workflow
+        path('reconciliations/start/', BankReconciliationViewSet.as_view({'post': 'start_reconciliation'}), name='start-bank-reconciliation'),
+        path('reconciliations/<int:pk>/complete/', BankReconciliationViewSet.as_view({'post': 'complete'}), name='complete-bank-reconciliation'),
+        
+        # Fiscal year workflow
+        path('fiscal-years/<int:pk>/close/', FiscalYearViewSet.as_view({'post': 'close_year'}), name='close-fiscal-year'),
+        path('financial-periods/<int:pk>/close/', FinancialPeriodViewSet.as_view({'post': 'close_period'}), name='close-financial-period'),
+    ])),
+    
+    # Analytics endpoints
+    path('api/analytics/', include([
+        # Dashboard analytics
+        path('kpis/', FinanceDashboardViewSet.as_view({'get': 'kpis'}), name='financial-kpis'),
+        path('cash-flow-forecast/', FinanceDashboardViewSet.as_view({'get': 'cash_flow'}), name='cash-flow-forecast'),
+        path('aging-summary/', FinanceDashboardViewSet.as_view({'get': 'aging_summary'}), name='aging-summary'),
+        path('revenue-trend/', FinanceDashboardViewSet.as_view({'get': 'revenue_trend'}), name='revenue-trend'),
+        path('expense-breakdown/', FinanceDashboardViewSet.as_view({'get': 'expense_breakdown'}), name='expense-breakdown'),
+        path('alerts/', FinanceDashboardViewSet.as_view({'get': 'alerts'}), name='financial-alerts'),
+        
+        # Summary statistics
+        path('invoices/summary/', InvoiceViewSet.as_view({'get': 'summary'}), name='invoices-summary'),
+        path('payments/summary/', PaymentViewSet.as_view({'get': 'summary'}), name='payments-summary'),
+        path('journal-entries/summary/', JournalEntryViewSet.as_view({'get': 'summary'}), name='journal-entries-summary'),
+        
+        # Performance metrics
+        path('vendors/top-by-purchases/', VendorViewSet.as_view({'get': 'top_by_purchases'}), name='top-vendors-by-purchases'),
+        path('customers/top-by-revenue/', InvoiceViewSet.as_view({'get': 'top_customers_by_revenue'}), name='top-customers-by-revenue'),
+    ])),
+    
+    # Utility endpoints
+    path('api/utilities/', include([
+        # Account hierarchy
+        path('accounts/hierarchy/', AccountViewSet.as_view({'get': 'hierarchy'}), name='accounts-hierarchy'),
+        path('accounts/balance-sheet/', AccountViewSet.as_view({'get': 'balance_sheet_accounts'}), name='balance-sheet-accounts'),
+        path('accounts/income-statement/', AccountViewSet.as_view({'get': 'income_statement_accounts'}), name='income-statement-accounts'),
+        
+        # Balance queries
+        path('accounts/<int:pk>/balance/', AccountViewSet.as_view({'get': 'balance'}), name='account-balance'),
+        
+        # Quick access lists
+        path('invoices/overdue/', InvoiceViewSet.as_view({'get': 'overdue'}), name='overdue-invoices'),
+        path('bills/overdue/', BillViewSet.as_view({'get': 'overdue'}), name='overdue-bills'),
+        path('bills/pending-approval/', BillViewSet.as_view({'get': 'pending_approval'}), name='bills-pending-approval'),
+        path('payments/unallocated/', PaymentViewSet.as_view({'get': 'unallocated'}), name='unallocated-payments'),
+        
+        # Current data
+        path('fiscal-years/current/', FiscalYearViewSet.as_view({'get': 'current'}), name='current-fiscal-year'),
+        
+        # Settings
+        path('settings/reset/', FinanceSettingsViewSet.as_view({'post': 'reset_to_defaults'}), name='reset-finance-settings'),
     ])),
 ]
 
 
-# backend/apps/finance/api/__init__.py
+# backend/apps/finance/integrations/inventory_urls.py
 
 """
-Finance API Sub-modules
-Additional API endpoints for specialized functionality
-"""
-
-
-# backend/apps/finance/api/quick_invoice_urls.py
-
-"""
-Quick Invoice Creation URLs
-Simplified invoice creation endpoints
+Finance-Inventory Integration URLs
 """
 
 from django.urls import path
-from .views.quick_invoice import QuickInvoiceView
+from .views import InventoryIntegrationViewSet
 
 urlpatterns = [
-    path('create/', QuickInvoiceView.as_view(), name='quick-invoice-create'),
+    path('sync-product-costs/', InventoryIntegrationViewSet.as_view({'post': 'sync_product_costs'}), name='sync-product-costs'),
+    path('update-inventory-valuation/', InventoryIntegrationViewSet.as_view({'post': 'update_inventory_valuation'}), name='update-inventory-valuation'),
+    path('create-cogs-entries/', InventoryIntegrationViewSet.as_view({'post': 'create_cogs_entries'}), name='create-cogs-entries'),
+    path('calculate-landed-costs/', InventoryIntegrationViewSet.as_view({'post': 'calculate_landed_costs'}), name='calculate-landed-costs'),
 ]
 
 
-# backend/apps/finance/api/quick_payment_urls.py
+# backend/apps/finance/integrations/crm_urls.py
 
 """
-Quick Payment Processing URLs
-Simplified payment recording endpoints
+Finance-CRM Integration URLs
 """
 
 from django.urls import path
-from .views.quick_payment import QuickPaymentView
+from .views import CRMIntegrationViewSet
 
 urlpatterns = [
-    path('record/', QuickPaymentView.as_view(), name='quick-payment-record'),
+    path('sync-customer-profiles/', CRMIntegrationViewSet.as_view({'post': 'sync_customer_profiles'}), name='sync-customer-profiles'),
+    path('update-credit-limits/', CRMIntegrationViewSet.as_view({'post': 'update_credit_limits'}), name='update-credit-limits'),
+    path('generate-customer-statements/', CRMIntegrationViewSet.as_view({'post': 'generate_customer_statements'}), name='generate-customer-statements'),
+    path('calculate-customer-lifetime-value/', CRMIntegrationViewSet.as_view({'post': 'calculate_customer_lifetime_value'}), name='calculate-customer-lifetime-value'),
 ]
 
 
-# backend/apps/finance/api/bulk_urls.py
+# backend/apps/finance/integrations/ecommerce_urls.py
 
 """
-Bulk Operations URLs
-Mass operations for finance data
+Finance-E-commerce Integration URLs
 """
 
 from django.urls import path
-from .views.bulk import (
-    BulkInvoiceView, BulkPaymentView, BulkJournalEntryView
+from .views import EcommerceIntegrationViewSet
+
+urlpatterns = [
+    path('sync-orders/', EcommerceIntegrationViewSet.as_view({'post': 'sync_orders'}), name='sync-ecommerce-orders'),
+    path('create-invoices-from-orders/', EcommerceIntegrationViewSet.as_view({'post': 'create_invoices_from_orders'}), name='create-invoices-from-orders'),
+    path('process-payments/', EcommerceIntegrationViewSet.as_view({'post': 'process_payments'}), name='process-ecommerce-payments'),
+    path('calculate-sales-tax/', EcommerceIntegrationViewSet.as_view({'post': 'calculate_sales_tax'}), name='calculate-sales-tax'),
+]
+
+
+# backend/apps/finance/api_urls.py
+
+"""
+Finance API URL Configuration
+Separate file for clean API routing
+"""
+
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from .viewsets import *
+
+# API v1 Router
+v1_router = DefaultRouter()
+
+# Register all viewsets
+v1_router.register(r'settings', FinanceSettingsViewSet, basename='settings')
+v1_router.register(r'fiscal-years', FiscalYearViewSet, basename='fiscal-years')
+v1_router.register(r'financial-periods', FinancialPeriodViewSet, basename='financial-periods')
+v1_router.register(r'account-categories', AccountCategoryViewSet, basename='account-categories')
+v1_router.register(r'accounts', AccountViewSet, basename='accounts')
+v1_router.register(r'currencies', CurrencyViewSet, basename='currencies')
+v1_router.register(r'exchange-rates', ExchangeRateViewSet, basename='exchange-rates')
+v1_router.register(r'tax-codes', TaxCodeViewSet, basename='tax-codes')
+v1_router.register(r'tax-groups', TaxGroupViewSet, basename='tax-groups')
+v1_router.register(r'journal-entries', JournalEntryViewSet, basename='journal-entries')
+v1_router.register(r'invoices', InvoiceViewSet, basename='invoices')
+v1_router.register(r'payments', PaymentViewSet, basename='payments')
+v1_router.register(r'vendors', VendorViewSet, basename='vendors')
+v1_router.register(r'bills', BillViewSet, basename='bills')
+v1_router.register(r'bank-accounts', BankAccountViewSet, basename='bank-accounts')
+v1_router.register(r'bank-statements', BankStatementViewSet, basename='bank-statements')
+v1_router.register(r'bank-reconciliations', BankReconciliationViewSet, basename='bank-reconciliations')
+v1_router.register(r'reports', FinancialReportsViewSet, basename='reports')
+v1_router.register(r'dashboard', FinanceDashboardViewSet, basename='dashboard')
+
+# URL patterns for API v1
+api_v1_patterns = [
+    path('', include(v1_router.urls)),
+    
+    # Custom API endpoints that don't fit into standard REST patterns
+    path('quick-actions/', include([
+        path('create-invoice/', InvoiceViewSet.as_view({'post': 'create_invoice'})),
+        path('create-payment/', PaymentViewSet.as_view({'post': 'create_payment'})),
+        path('create-journal-entry/', JournalEntryViewSet.as_view({'post': 'create_entry'})),
+    ])),
+    
+    path('bulk-operations/', include([
+        path('send-invoices/', InvoiceViewSet.as_view({'post': 'send_invoices'})),
+        path('post-journal-entries/', JournalEntryViewSet.as_view({'post': 'post_entries'})),
+        path('create-accounts/', AccountViewSet.as_view({'post': 'bulk_create'})),
+    ])),
+    
+    path('workflows/', include([
+        path('invoices/<int:pk>/approve/', InvoiceViewSet.as_view({'post': 'approve'})),
+        path('invoices/<int:pk>/send/', InvoiceViewSet.as_view({'post': 'send'})),
+        path('invoices/<int:pk>/void/', InvoiceViewSet.as_view({'post': 'void'})),
+        path('bills/<int:pk>/approve/', BillViewSet.as_view({'post': 'approve'})),
+        path('journal-entries/<int:pk>/post/', JournalEntryViewSet.as_view({'post': 'post_entry'})),
+        path('journal-entries/<int:pk>/reverse/', JournalEntryViewSet.as_view({'post': 'reverse_entry'})),
+        path('payments/<int:pk>/apply-to-invoices/', PaymentViewSet.as_view({'post': 'apply_to_invoices'})),
+        path('payments/<int:pk>/apply-to-bills/', PaymentViewSet.as_view({'post': 'apply_to_bills'})),
+        path('reconciliations/start/', BankReconciliationViewSet.as_view({'post': 'start_reconciliation'})),
+        path('reconciliations/<int:pk>/complete/', BankReconciliationViewSet.as_view({'post': 'complete'})),
+    ])),
+    
+    path('analytics/', include([
+        path('kpis/', FinanceDashboardViewSet.as_view({'get': 'kpis'})),
+        path('cash-flow/', FinanceDashboardViewSet.as_view({'get': 'cash_flow'})),
+        path('aging-summary/', FinanceDashboardViewSet.as_view({'get': 'aging_summary'})),
+        path('revenue-trend/', FinanceDashboardViewSet.as_view({'get': 'revenue_trend'})),
+        path('expense-breakdown/', FinanceDashboardViewSet.as_view({'get': 'expense_breakdown'})),
+    ])),
+    
+    path('exports/', include([
+        path('balance-sheet/pdf/', FinancialReportsViewSet.as_view({
+            'get': 'balance_sheet'
+        }), {'format': 'pdf'}),
+        path('income-statement/pdf/', FinancialReportsViewSet.as_view({
+            'get': 'income_statement'
+        }), {'format': 'pdf'}),
+        path('cash-flow/pdf/', FinancialReportsViewSet.as_view({
+            'get': 'cash_flow'
+        }), {'format': 'pdf'}),
+    ])),
+]
+
+# Main API URL patterns
+urlpatterns = [
+    path('v1/', include(api_v1_patterns)),
+    # Future API versions can be added here
+    # path('v2/', include(api_v2_patterns)),
+]
+
+
+# backend/apps/finance/admin_urls.py
+
+"""
+Finance Admin URL Configuration
+For Django admin customizations
+"""
+
+from django.urls import path
+from .admin_views import (
+    FinanceAdminDashboardView, BulkJournalEntryCreateView,
+    ChartOfAccountsImportView, FinancialReportsAdminView
 )
 
 urlpatterns = [
-    path('invoices/', BulkInvoiceView.as_view(), name='bulk-invoices'),
-    path('payments/', BulkPaymentView.as_view(), name='bulk-payments'),
-    path('journal-entries/', BulkJournalEntryView.as_view(), name='bulk-journal-entries'),
+    path('dashboard/', FinanceAdminDashboardView.as_view(), name='finance-admin-dashboard'),
+    path('bulk-journal-entries/', BulkJournalEntryCreateView.as_view(), name='bulk-journal-entries'),
+    path('import-chart-of-accounts/', ChartOfAccountsImportView.as_view(), name='import-chart-of-accounts'),
+    path('financial-reports/', FinancialReportsAdminView.as_view(), name='financial-reports-admin'),
 ]
-
-
-# backend/apps/finance/api/import_urls.py
-
-"""
-Data Import URLs
-Import financial data from various sources
-"""
-
-from django.urls import path
-from .views.imports import (
-    ImportChartOfAccountsView, ImportBankStatementView,
-    ImportInvoicesView, ImportVendorsView
-)
-
-urlpatterns = [
-    path('chart-of-accounts/', ImportChartOfAccountsView.as_view(), name='import-chart-accounts'),
-    path('bank-statement/', ImportBankStatementView.as_view(), name='import-bank-statement'),
-    path('invoices/', ImportInvoicesView.as_view(), name='import-invoices'),
-    path('vendors/', ImportVendorsView.as_view(), name='import-vendors'),
-]
-
-
-# backend/apps/finance/api/export_urls.py
-
-"""
-Data Export URLs
-Export financial data in various formats
-"""
-
-from django.urls import path
-from .views.exports import (
-    ExportTrialBalanceView, ExportInvoicesView,
-    ExportPaymentsView, ExportJournalEntriesView
-)
-
-urlpatterns = [
-    path('trial-balance/', ExportTrialBalanceView.as_view(), name='export-trial-balance'),
-    path('invoices/', ExportInvoicesView.as_view(), name='export-invoices'),
-    path('payments/', ExportPaymentsView.as_view(), name='export-payments'),
-    path('journal-entries/', ExportJournalEntriesView.as_view(), name='export-journal-entries'),
-]
-
-
-# backend/apps/finance/api/webhook_urls.py
-
-"""
-Webhook URLs
-External system integration endpoints
-"""
-
-from django.urls import path
-from .views.webhooks import (
-    StripeWebhookView, PayPalWebhookView, BankFeedWebhookView
-)
-
-urlpatterns = [
-    path('stripe/', StripeWebhookView.as_view(), name='stripe-webhook'),
-    path('paypal/', PayPalWebhookView.as_view(), name='paypal-webhook'),
-    path('bank-feed/', BankFeedWebhookView.as_view(), name='bank-feed-webhook'),
-]
-
-
-# backend/apps/finance/filters.py
-
-"""
-Finance Module Filters
-DjangoFilter classes for API filtering
-"""
-
-import django_filters
-from django.db.models import Q
-from .models import (
-    Account, JournalEntry, Invoice, Bill, Payment,
-    Vendor, BankTransaction, BankReconciliation
-)
-
-
-class AccountFilter(django_filters.FilterSet):
-    """Account filtering"""
-    
-    account_type = django_filters.CharFilter(field_name='account_type')
-    is_active = django_filters.BooleanFilter(field_name='is_active')
-    is_bank_account = django_filters.BooleanFilter(field_name='is_bank_account')
-    parent_account = django_filters.NumberFilter(field_name='parent_account')
-    category = django_filters.NumberFilter(field_name='category')
-    search = django_filters.CharFilter(method='filter_search')
-    
-    class Meta:
-        model = Account
-        fields = ['account_type', 'is_active', 'is_bank_account', 'parent_account', 'category']
-    
-    def filter_search(self, queryset, name, value):
-        return queryset.filter(
-            Q(code__icontains=value) |
-            Q(name__icontains=value) |
-            Q(description__icontains=value)
-        )
-
-
-class JournalEntryFilter(django_filters.FilterSet):
-    """Journal entry filtering"""
-    
-    status = django_filters.CharFilter(field_name='status')
-    entry_type = django_filters.CharFilter(field_name='entry_type')
-    entry_date_from = django_filters.DateFilter(field_name='entry_date', lookup_expr='gte')
-    entry_date_to = django_filters.DateFilter(field_name='entry_date', lookup_expr='lte')
-    amount_from = django_filters.NumberFilter(field_name='total_debit', lookup_expr='gte')
-    amount_to = django_filters.NumberFilter(field_name='total_debit', lookup_expr='lte')
-    created_by = django_filters.NumberFilter(field_name='created_by')
-    
-    class Meta:
-        model = JournalEntry
-        fields = ['status', 'entry_type', 'created_by']
-
-
-class InvoiceFilter(django_filters.FilterSet):
-    """Invoice filtering"""
-    
-    status = django_filters.CharFilter(field_name='status')
-    invoice_type = django_filters.CharFilter(field_name='invoice_type')
-    customer = django_filters.NumberFilter(field_name='customer')
-    invoice_date_from = django_filters.DateFilter(field_name='invoice_date', lookup_expr='gte')
-    invoice_date_to = django_filters.DateFilter(field_name='invoice_date', lookup_expr='lte')
-    due_date_from = django_filters.DateFilter(field_name='due_date', lookup_expr='gte')
-    due_date_to = django_filters.DateFilter(field_name='due_date', lookup_expr='lte')
-    amount_from = django_filters.NumberFilter(field_name='total_amount', lookup_expr='gte')
-    amount_to = django_filters.NumberFilter(field_name='total_amount', lookup_expr='lte')
-    is_overdue = django_filters.BooleanFilter(method='filter_overdue')
-    
-    class Meta:
-        model = Invoice
-        fields = ['status', 'invoice_type', 'customer']
-    
-    def filter_overdue(self, queryset, name, value):
-        from datetime import date
-        if value:
-            return queryset.filter(
-                due_date__lt=date.today(),
-                status__in=['OPEN', 'SENT', 'VIEWED', 'PARTIAL'],
-                amount_due__gt=0
-            )
-        return queryset
-
-
-class BillFilter(django_filters.FilterSet):
-    """Bill filtering"""
-    
-    status = django_filters.CharFilter(field_name='status')
-    bill_type = django_filters.CharFilter(field_name='bill_type')
-    vendor = django_filters.NumberFilter(field_name='vendor')
-    bill_date_from = django_filters.DateFilter(field_name='bill_date', lookup_expr='gte')
-    bill_date_to = django_filters.DateFilter(field_name='bill_date', lookup_expr='lte')
-    due_date_from = django_filters.DateFilter(field_name='due_date', lookup_expr='gte')
-    due_date_to = django_filters.DateFilter(field_name='due_date', lookup_expr='lte')
-    amount_from = django_filters.NumberFilter(field_name='total_amount', lookup_expr='gte')
-    amount_to = django_filters.NumberFilter(field_name='total_amount', lookup_expr='lte')
-    is_overdue = django_filters.BooleanFilter(method='filter_overdue')
-    
-    class Meta:
-        model = Bill
-        fields = ['status', 'bill_type', 'vendor']
-    
-    def filter_overdue(self, queryset, name, value):
-        from datetime import date
-        if value:
-            return queryset.filter(
-                due_date__lt=date.today(),
-                status__in=['OPEN', 'APPROVED', 'PARTIAL'],
-                amount_due__gt=0
-            )
-        return queryset
-
-
-class PaymentFilter(django_filters.FilterSet):
-    """Payment filtering"""
-    
-    payment_type = django_filters.CharFilter(field_name='payment_type')
-    payment_method = django_filters.CharFilter(field_name='payment_method')
-    status = django_filters.CharFilter(field_name='status')
-    customer = django_filters.NumberFilter(field_name='customer')
-    vendor = django_filters.NumberFilter(field_name='vendor')
-    payment_date_from = django_filters.DateFilter(field_name='payment_date', lookup_expr='gte')
-    payment_date_to = django_filters.DateFilter(field_name='payment_date', lookup_expr='lte')
-    amount_from = django_filters.NumberFilter(field_name='amount', lookup_expr='gte')
-    amount_to = django_filters.NumberFilter(field_name='amount', lookup_expr='lte')
-    bank_account = django_filters.NumberFilter(field_name='bank_account')
-    
-    class Meta:
-        model = Payment
-        fields = ['payment_type', 'payment_method', 'status', 'customer', 'vendor', 'bank_account']
-
-
-class VendorFilter(django_filters.FilterSet):
-    """Vendor filtering"""
-    
-    status = django_filters.CharFilter(field_name='status')
-    vendor_type = django_filters.CharFilter(field_name='vendor_type')
-    is_inventory_supplier = django_filters.BooleanFilter(field_name='is_inventory_supplier')
-    is_1099_vendor = django_filters.BooleanFilter(field_name='is_1099_vendor')
-    payment_terms = django_filters.CharFilter(field_name='payment_terms')
-    search = django_filters.CharFilter(method='filter_search')
-    
-    class Meta:
-        model = Vendor
-        fields = ['status', 'vendor_type', 'is_inventory_supplier', 'is_1099_vendor', 'payment_terms']
-    
-    def filter_search(self, queryset, name, value):
-        return queryset.filter(
-            Q(company_name__icontains=value) |
-            Q(vendor_number__icontains=value) |
-            Q(email__icontains=value)
-        )
-
-
-class BankTransactionFilter(django_filters.FilterSet):
-    """Bank transaction filtering"""
-    
-    bank_statement = django_filters.NumberFilter(field_name='bank_statement')
-    transaction_type = django_filters.CharFilter(field_name='transaction_type')
-    reconciliation_status = django_filters.CharFilter(field_name='reconciliation_status')
-    transaction_date_from = django_filters.DateFilter(field_name='transaction_date', lookup_expr='gte')
-    transaction_date_to = django_filters.DateFilter(field_name='transaction_date', lookup_expr='lte')
-    amount_from = django_filters.NumberFilter(field_name='amount', lookup_expr='gte')
-    amount_to = django_filters.NumberFilter(field_name='amount', lookup_expr='lte')
-    is_duplicate = django_filters.BooleanFilter(field_name='is_duplicate')
-    
-    class Meta:
-        model = BankTransaction
-        fields = ['bank_statement', 'transaction_type', 'reconciliation_status', 'is_duplicate']
-
-
-class BankReconciliationFilter(django_filters.FilterSet):
-    """Bank reconciliation filtering"""
-    
-    bank_account = django_filters.NumberFilter(field_name='bank_account')
-    status = django_filters.CharFilter(field_name='status')
-    reconciliation_date_from = django_filters.DateFilter(field_name='reconciliation_date', lookup_expr='gte')
-    reconciliation_date_to = django_filters.DateFilter(field_name='reconciliation_date', lookup_expr='lte')
-    is_balanced = django_filters.BooleanFilter(field_name='is_balanced')
-    started_by = django_filters.NumberFilter(field_name='started_by')
-    completed_by = django_filters.NumberFilter(field_name='completed_by')
-    
-    class Meta:
-        model = BankReconciliation
-        fields = ['bank_account', 'status', 'is_balanced', 'started_by', 'completed_by']

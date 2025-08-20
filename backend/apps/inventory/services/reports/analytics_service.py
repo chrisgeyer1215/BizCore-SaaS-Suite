@@ -457,7 +457,7 @@ class AnalyticsService(BaseService):
     
     def _calculate_seasonal_patterns[Dict[str, Any]]) -> Dict[str, Any]:
         """Calculate seasonal patterns from monthly data"""
-        try:
+        try
             # Group by product and month (ignoring year)
             product_patterns = {}
             
