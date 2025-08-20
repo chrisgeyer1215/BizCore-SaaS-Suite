@@ -1,0 +1,263 @@
+<!-- apps/ecommerce/templates/ecommerce/base.html -->
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="X-UA-Compatible" content="ie=edge">
+    
+    <!-- SEO Meta Tags -->
+    <title>{% block title %}{{ meta_title|default:"E-commerce Store" }}{% endblock %}</title>
+    <meta name="description" content="{{ meta_description|default:'Premium products and exceptional service' }}">
+    {% if meta_keywords %}<meta name="keywords" content="{{ meta_keywords }}">{% endif %}
+    <meta name="author" content="{{ ecommerce_settings.store_name|default:'Store' }}">
+    
+    <!-- Open Graph Meta Tags -->
+    <meta property="og:title" content="{{ meta_title|default:'E-commerce Store' }}">
+    <meta property="og:description" content="{{ meta_description|default:'Premium products and exceptional service' }}">
+    <meta property="og:image" content="{{ meta_image|default:'/static/ecommerce/images/default-og-image.jpg' }}">
+    <meta property="og:url" content="{{ request.build_absolute_uri }}">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="{{ ecommerce_settings.store_name|default:'Store' }}">
+    
+    <!-- Twitter Card Meta Tags -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{ meta_title|default:'E-commerce Store' }}">
+    <meta name="twitter:description" content="{{ meta_description|default:'Premium products and exceptional service' }}">
+    <meta name="twitter:image" content="{{ meta_image|default:'/static/ecommerce/images/default-og-image.jpg' }}">
+    
+    <!-- Canonical URL -->
+    <link rel="canonical" href="{{ request.build_absolute_uri }}">
+    
+    <!-- Favicon -->
+    <link rel="icon" type="image/x-icon" href="/static/ecommerce/images/favicon.ico">
+    
+    <!-- CSS -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <link href="/static/ecommerce/css/custom.css" rel="stylesheet">
+    
+    <!-- Preload Critical Resources -->
+    <link rel="preload" href="/static/ecommerce/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+    
+    {% block extra_head %}{% endblock %}
+    
+    <!-- Structured Data -->
+    {% if structured_data %}
+    <script type="application/ld+json">
+    {{ structured_data|safe }}
+    </script>
+    {% endif %}
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans">
+    <!-- Skip to content link for accessibility -->
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 bg-blue-600 text-white px-4 py-2 rounded-md z-50">
+        Skip to main content
+    </a>
+
+    <!-- Header -->
+    <header class="bg-white shadow-md sticky top-0 z-40">
+        <!-- Top Bar -->
+        <div class="bg-gray-800 text-white text-sm">
+            <div class="container mx-auto px-4 py-2">
+                <div class="flex justify-between items-center">
+                    <div class="flex space-x-4">
+                        {% if ecommerce_settings.store_phone %}
+                        <span><i class="fas fa-phone mr-1"></i> {{ ecommerce_settings.store_phone }}</span>
+                        {% endif %}
+                        {% if ecommerce_settings.store_email %}
+                        <span><i class="fas fa-envelope mr-1"></i> {{ ecommerce_settings.store_email }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="flex space-x-4">
+                        {% if user.is_authenticated %}
+                        <a href="{% url 'ecommerce:customer_account' %}" class="hover:text-blue-300">My Account</a>
+                        <a href="{% url 'auth:logout' %}" class="hover:text-blue-300">Logout</a>
+                        {% else %}
+                        <a href="{% url 'auth:login' %}" class="hover:text-blue-300">Login</a>
+                        <a href="{% url 'auth:register' %}" class="hover:text-blue-300">Register</a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Header -->
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <!-- Logo -->
+                <div class="flex items-center">
+                    <a href="{% url 'ecommerce:home' %}" class="text-2xl font-bold text-blue-600">
+                        {% if ecommerce_settings.store_name %}
+                            {{ ecommerce_settings.store_name }}
+                        {% else %}
+                            E-Store
+                        {% endif %}
+                    </a>
+                </div>
+
+                <!-- Search Bar -->
+                <div class="flex-1 max-w-lg mx-8">
+                    <form action="{% url 'ecommerce:search' %}" method="get" class="relative">
+                        <input 
+                            type="text" 
+                            name="q" 
+                            placeholder="Search products..." 
+                            value="{{ request.GET.q }}"
+                            class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        >
+                        <button type="submit" class="absolute right-2 top-2 text-gray-400 hover:text-gray-600">
+                            <i class="fas fa-search"></i>
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Header Actions -->
+                <div class="flex items-center space-x-4">
+                    <!-- Wishlist -->
+                    {% if user.is_authenticated %}
+                    <a href="{% url 'ecommerce:wishlist' %}" class="relative p-2 text-gray-600 hover:text-blue-600 transition-colors">
+                        <i class="fas fa-heart text-xl"></i>
+                        {% if wishlist_item_count > 0 %}
+                        <span class="absolute -top-1 -right-1 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
+                            {{ wishlist_item_count }}
+                        </span>
+                        {% endif %}
+                    </a>
+                    {% endif %}
+
+                    <!-- Cart -->
+                    <a href="{% url 'ecommerce:cart_detail' %}" class="relative p-2 text-gray-600 hover:text-blue-600 transition-colors" id="cart-icon">
+                        <i class="fas fa-shopping-cart text-xl"></i>
+                        <span class="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center" id="cart-count">
+                            {{ cart_item_count|default:0 }}
+                        </span>
+                    </a>
+
+                    <!-- Mobile Menu Toggle -->
+                    <button class="md:hidden p-2 text-gray-600" id="mobile-menu-toggle">
+                        <i class="fas fa-bars text-xl"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation -->
+        <nav class="bg-gray-100 border-t border-gray-200">
+            <div class="container mx-auto px-4">
+                <div class="flex space-x-8 overflow-x-auto" id="main-nav">
+                    <a href="{% url 'ecommerce:home' %}" class="py-3 px-2 text-gray-700 hover:text-blue-600 whitespace-nowrap">
+                        Home
+                    </a>
+                    <a href="{% url 'ecommerce:product_list' %}" class="py-3 px-2 text-gray-700 hover:text-blue-600 whitespace-nowrap">
+                        All Products
+                    </a>
+                    {% for collection in navigation_collections %}
+                    <a href="{{ collection.get_absolute_url }}" class="py-3 px-2 text-gray-700 hover:text-blue-600 whitespace-nowrap">
+                        {{ collection.title }}
+                    </a>
+                    {% endfor %}
+                    <a href="{% url 'ecommerce:new_arrivals' %}" class="py-3 px-2 text-gray-700 hover:text-blue-600 whitespace-nowrap">
+                        New Arrivals
+                    </a>
+                    <a href="{% url 'ecommerce:sale' %}" class="py-3 px-2 text-gray-700 hover:text-blue-600 whitespace-nowrap text-red-600">
+                        Sale
+                    </a>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Mobile Menu -->
+        <div class="md:hidden hidden bg-white border-t border-gray-200" id="mobile-menu">
+            <div class="container mx-auto px-4 py-4">
+                <div class="space-y-2">
+                    <a href="{% url 'ecommerce:home' %}" class="block py-2 text-gray-700 hover:text-blue-600">Home</a>
+                    <a href="{% url 'ecommerce:product_list' %}" class="block py-2 text-gray-700 hover:text-blue-600">All Products</a>
+                    {% for collection in navigation_collections %}
+                    <a href="{{ collection.get_absolute_url }}" class="block py-2 text-gray-700 hover:text-blue-600">{{ collection.title }}</a>
+                    {% endfor %}
+                    <a href="{% url 'ecommerce:new_arrivals' %}" class="block py-2 text-gray-700 hover:text-blue-600">New Arrivals</a>
+                    <a href="{% url 'ecommerce:sale' %}" class="block py-2 text-red-600 hover:text-red-700">Sale</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Breadcrumb Navigation -->
+    {% if breadcrumbs %}
+    <nav class="bg-white border-b border-gray-200" aria-label="Breadcrumb">
+        <div class="container mx-auto px-4 py-3">
+            <ol class="flex space-x-2 text-sm text-gray-500">
+                {% for breadcrumb in breadcrumbs %}
+                <li class="flex items-center">
+                    {% if not forloop.first %}
+                    <i class="fas fa-chevron-right mx-2 text-gray-400"></i>
+                    {% endif %}
+                    {% if breadcrumb.url and not breadcrumb.current %}
+                    <a href="{{ breadcrumb.url }}" class="hover:text-blue-600">{{ breadcrumb.title }}</a>
+                    {% else %}
+                    <span class="{% if breadcrumb.current %}text-gray-900 font-medium{% endif %}">{{ breadcrumb.title }}</span>
+                    {% endif %}
+                </li>
+                {% endfor %}
+            </ol>
+        </div>
+    </nav>
+    {% endif %}
+
+    <!-- Flash Messages -->
+    {% if messages %}
+    <div class="container mx-auto px-4 py-4">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags }} mb-4 p-4 rounded-lg border-l-4 {% if message.tags == 'error' %}bg-red-50 border-red-500 text-red-700{% elif message.tags == 'warning' %}bg-yellow-50 border-yellow-500 text-yellow-700{% elif message.tags == 'success' %}bg-green-50 border-green-500 text-green-700{% else %}bg-blue-50 border-blue-500 text-blue-700{% endif %}">
+            <div class="flex items-center">
+                <i class="fas fa-{% if message.tags == 'error' %}exclamation-triangle{% elif message.tags == 'warning' %}exclamation-circle{% elif message.tags == 'success' %}check-circle{% else %}info-circle{% endif %} mr-2"></i>
+                {{ message }}
+                <button onclick="this.parentElement.parentElement.remove()" class="ml-auto text-current opacity-50 hover:opacity-75">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Main Content -->
+    <main id="main-content" class="min-h-screen">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 text-white mt-16">
+        <div class="container mx-auto px-4 py-12">
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-8">
+                <!-- Store Info -->
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">{{ ecommerce_settings.store_name|default:"Our Store" }}</h3>
+                    {% if ecommerce_settings.store_description %}
+                    <p class="text-gray-300 mb-4">{{ ecommerce_settings.store_description }}</p>
+                    {% endif %}
+                    <div class="space-y-2 text-sm text-gray-300">
+                        {% if ecommerce_settings.store_email %}
+                        <p><i class="fas fa-envelope mr-2"></i> {{ ecommerce_settings.store_email }}</p>
+                        {% endif %}
+                        {% if ecommerce_settings.store_phone %}
+                        <p><i class="fas fa-phone mr-2"></i> {{ ecommerce_settings.store_phone }}</p>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Quick Links -->
+                <div>
+                    <h3 class="text-lg font-semibold mb-4">Quick Links</h3>
+                    <ul class="space-y-2 text-sm text-gray-300">
+                        <li><a href="{% url 'ecommerce:product_list' %}" class="hover:text-white">All Products</a></li>
+                        <li><a href="{% url 'ecommerce:new_arrivals' %}" class="hover:text-white">New Arrivals</a></li>
+                        <li><a href="{% url 'ecommerce:best_sellers' %}" class="hover:text-white">Best Sellers</a></li>
+                        <li><a href="{% url 'ecommerce:sale' %}" class="hover:text-white">Sale</a></li>
+                    </ul>
+                </div>
+
+                <!-- Customer Service -->
+                <div>
+                    <h3

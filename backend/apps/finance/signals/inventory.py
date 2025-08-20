@@ -8,7 +8,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 from ..models import BillItem, InvoiceItem
-from apps.inventory.models import StockMovement
+from apps.inventory_one.models import StockMovement
 
 
 @receiver(post_save, sender=BillItem)

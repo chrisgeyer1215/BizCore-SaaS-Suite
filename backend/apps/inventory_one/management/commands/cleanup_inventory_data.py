@@ -6,7 +6,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 from datetime import timedelta
 from apps.tenants.models import Tenant
-from apps.inventory.models import (
+from apps.inventory_one.models import (
     StockMovement, InventoryAlert, InventoryReport, StockValuationLayer
 )
 

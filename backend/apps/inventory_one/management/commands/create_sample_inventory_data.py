@@ -9,7 +9,7 @@ import random
 from faker import Faker
 
 from apps.tenants.models import Tenant
-from apps.inventory.models import (
+from apps.inventory_one.models import (
     InventorySettings, UnitOfMeasure, Department, Category, SubCategory,
     Brand, Supplier, Warehouse, StockLocation, Product, StockItem
 )

@@ -4,7 +4,7 @@ Management command to calculate ABC analysis for inventory
 
 from django.core.management.base import BaseCommand
 from apps.tenants.models import Tenant
-from apps.inventory.services import AnalyticsService
+from apps.inventory_one.services import AnalyticsService
 
 
 class Command(BaseCommand):

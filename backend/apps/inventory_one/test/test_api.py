@@ -11,7 +11,7 @@ import json
 
 from apps.tenants.models import Tenant
 from apps.auth.models import Membership
-from apps.inventory.models import (
+from apps.inventory_one.models import (
     InventorySettings, UnitOfMeasure, Department, Category,
     Brand, Supplier, Warehouse, Product, StockItem
 )

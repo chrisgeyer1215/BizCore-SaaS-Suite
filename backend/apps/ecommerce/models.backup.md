@@ -13,7 +13,7 @@ import logging
 from enum import TextChoices
 
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
-from apps.inventory.models import Product, ProductVariation, Warehouse, StockItem
+from apps.inventory_one.models import Product, ProductVariation, Warehouse, StockItem
 from backend.apps.crm.models.product import Customer
 
 User = get_user_model()

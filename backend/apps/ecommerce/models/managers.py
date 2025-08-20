@@ -785,3 +785,6 @@ class ReviewManager(models.Manager):
         return self.filter(status='APPROVED')
     
     def pending(self):
+        """Pending reviews"""
+        return self.filter(status='PENDING')
+    

@@ -10,7 +10,7 @@ from django.utils import timezone
 from datetime import date, timedelta
 
 from apps.tenants.models import Tenant
-from apps.inventory.models import (
+from apps.inventory_one.models import (
     InventorySettings, UnitOfMeasure, Department, Category, SubCategory,
     Brand, Supplier, Warehouse, StockLocation, Product, StockItem,
     StockMovement, Batch, PurchaseOrder, PurchaseOrderItem, InventoryAlert
@@ -529,7 +529,7 @@ class TestInventoryBusinessLogic(TestCase):
             products.append(product)
         
         # Calculate ABC classification
-        from apps.inventory.services import AnalyticsService
+        from apps.inventory_one.services import AnalyticsService
         analytics = AnalyticsService(self.tenant)
         analytics.calculate_abc_analysis()
         

@@ -2037,7 +2037,7 @@ class StockItem(TenantBaseModel):
     
     def create_movement(self, movement_type, quantity, reason='', unit_cost=None, user=None):
         """Create a stock movement record"""
-        from apps.inventory.models import StockMovement  # Avoid circular import
+        from apps.inventory_one.models import StockMovement  # Avoid circular import
         
         return StockMovement.objects.create(
             tenant=self.tenant,
@@ -2077,7 +2077,7 @@ class StockItem(TenantBaseModel):
     def calculate_turnover_rate(self, days=365):
         """Calculate inventory turnover rate"""
         from django.db.models import Sum
-        from apps.inventory.models import StockMovement
+        from apps.inventory_one.models import StockMovement
         
         # Get total outbound movements in the period
         end_date = timezone.now().date()
