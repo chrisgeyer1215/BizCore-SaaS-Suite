@@ -85,3 +85,24 @@ class InventoryManager(TenantAwareManager):
     
     def get_queryset(self):
         return InventoryQuerySet(self.model, using=self._db)
+
+class BaseInventoryManager(models.Manager):
+    """
+    Base manager for all inventory models with common functionality
+    """
+    
+    def get_queryset(self):
+        """Override to add default optimizations"""
+        return super().get_queryset().select_related()
+    
+    def active(self):
+        """Get active records (for models with is_active field)"""
+        if hasattr(self.model, 'is_active'):
+            return self.filter(is_active=True)
+        return self.all()
+    
+    def inactive(self):
+        """Get inactive records"""
+        if hasattr(self.model, 'is_active'):
+            return self.filter(is_active=False)
+        return self.none()

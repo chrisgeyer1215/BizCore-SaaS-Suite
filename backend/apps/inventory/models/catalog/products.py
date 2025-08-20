@@ -7,11 +7,13 @@ from django.utils.text import slugify
 from decimal import Decimal
 from datetime import date
 
+from backend.apps.inventory.models.abstract.auditable import AuditableMixin
+
 from ..abstract.base import TenantBaseModel, SoftDeleteMixin, ActivatableMixin
 from ...managers.base import InventoryManager
+from ...managers.product import ProductManager
 
-
-class Product(TenantBaseModel, SoftDeleteMixin):
+class Product(TenantBaseModel, AuditableMixin, SoftDeleteMixin):
     """
     Comprehensive product management system
     """
@@ -227,7 +229,7 @@ class Product(TenantBaseModel, SoftDeleteMixin):
     internal_notes = models.TextField(blank=True)
     
     objects = InventoryManager()
-    
+    objects = ProductManager()
     class Meta:
         db_table = 'inventory_products'
         ordering = ['name']

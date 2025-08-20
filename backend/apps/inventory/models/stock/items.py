@@ -8,13 +8,14 @@ from django.utils import timezone
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import timedelta
 
-from ..abstract.base import TenantBaseModel, ActivatableMixin
+from ..abstract.base import SoftDeleteMixin, TenantBaseModel, ActivatableMixin
 from ...managers.base import InventoryManager
+from ...managers.stock import StockItemManager
 
 User = get_user_model()
 
 
-class StockItem(TenantBaseModel, ActivatableMixin):
+class StockItem(TenantBaseModel, ActivatableMixin, SoftDeleteMixin):
     """
     Enhanced stock item management with comprehensive tracking and analytics
     """
@@ -194,7 +195,7 @@ class StockItem(TenantBaseModel, ActivatableMixin):
     custom_fields = models.JSONField(default=dict, blank=True)
     
     objects = InventoryManager()
-    
+    objects = StockItemManager()
     class Meta:
         db_table = 'inventory_stock_items'
         constraints = [
