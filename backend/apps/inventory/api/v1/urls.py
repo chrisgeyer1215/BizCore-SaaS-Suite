@@ -92,3 +92,93 @@ urlpatterns = [
         description='Comprehensive inventory management system API'
     )),
 ]
+
+
+
+
+# Confuse urls 
+
+
+# apps/inventory/api/v1/urls.py
+
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+from rest_framework.documentation import include_docs_urls
+from rest_framework.schemas import get_schema_view
+from rest_framework import permissions
+
+# Import all viewsets (already imported in main urls.py)
+
+# Custom API endpoints that don't fit into ViewSets
+from apps.inventory.api.v1.views import (
+    custom_views, dashboard_views, integration_views
+)
+
+app_name = 'inventory_api_v1'
+
+# Additional custom endpoints
+custom_urlpatterns = [
+    # Dashboard endpoints
+    path('dashboard/overview/', dashboard_views.DashboardOverviewView.as_view(), 
+         name='dashboard-overview'),
+    path('dashboard/kpis/', dashboard_views.KPIView.as_view(), 
+         name='dashboard-kpis'),
+    path('dashboard/charts/', dashboard_views.ChartDataView.as_view(), 
+         name='dashboard-charts'),
+    
+    # Integration endpoints
+    path('integrations/finance/sync/', integration_views.FinanceSyncView.as_view(), 
+         name='finance-sync'),
+    path('integrations/ecommerce/sync/', integration_views.EcommerceSyncView.as_view(), 
+         name='ecommerce-sync'),
+    path('integrations/crm/sync/', integration_views.CRMSyncView.as_view(), 
+         name='crm-sync'),
+    
+    # Bulk operations
+    path('bulk/import/', custom_views.BulkImportView.as_view(), 
+         name='bulk-import'),
+    path('bulk/export/', custom_views.BulkExportView.as_view(), 
+         name='bulk-export'),
+    path('bulk/operations/', custom_views.BulkOperationsView.as_view(), 
+         name='bulk-operations'),
+    
+    # Analytics endpoints
+    path('analytics/trends/', custom_views.TrendsAnalysisView.as_view(), 
+         name='analytics-trends'),
+    path('analytics/forecasting/', custom_views.ForecastingView.as_view(), 
+         name='analytics-forecasting'),
+    path('analytics/optimization/', custom_views.OptimizationView.as_view(), 
+         name='analytics-optimization'),
+    
+    # System endpoints
+    path('system/backup/', custom_views.BackupView.as_view(), 
+         name='system-backup'),
+    path('system/maintenance/', custom_views.MaintenanceView.as_view(), 
+         name='system-maintenance'),
+    path('system/audit/', custom_views.AuditView.as_view(), 
+         name='system-audit'),
+]
+
+# Schema and documentation
+schema_view = get_schema_view(
+    title="Inventory Management API",
+    description="Comprehensive API for multi-tenant inventory management",
+    version="v1",
+    permission_classes=[permissions.IsAuthenticated],
+)
+
+urlpatterns = [
+    # Main router URLs (from main urls.py)
+    path('', include('apps.inventory.urls')),
+    
+    # Custom endpoints
+    path('', include(custom_urlpatterns)),
+    
+    # API Documentation
+    path('schema/', schema_view, name='api-schema'),
+    path('docs/', include_docs_urls(title='Inventory API Documentation')),
+    
+    # OpenAPI/Swagger endpoints
+    path('swagger/', custom_views.SwaggerView.as_view(), name='swagger-ui'),
+    path('redoc/', custom_views.ReDocView.as_view(), name='redoc-ui'),
+]
