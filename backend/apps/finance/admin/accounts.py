@@ -139,3 +139,8 @@ class TaxCodeAdmin(admin.ModelAdmin):
         })
     )
     
+    def get_queryset(self, request):
+        queryset = super().get_queryset(request)
+        # Filter queryset based on user permissions or other criteria
+        return queryset 
+        return queryset
