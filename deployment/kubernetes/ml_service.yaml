@@ -1,0 +1,59 @@
+# deployment/kubernetes/ml-service.yaml
+
+apiVersion: apps-ml-service
+  labels:
+    app: inventory-ml
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: inventory-ml
+  template:spec:
+      containers:
+      - name: ml-service
+        image: inventory-ml:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: REDIS_URL
+          value: "redis://redis-service:6379"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secret
+              key: url
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+        livenessProbe:
+          httpGet:
+            path: /ml/health/
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /ml/health/
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        volumeMounts:
+        - name: ml-models-storage
+          mountPath: /app/media/ml_models
+      volumes:
+      - name: ml-models-storage
+        persistentVolumeClaim:
+          claimName: ml-models-pvc
+---
+apiVersion: v1
+kin:
+  selector:
+    app: inventory-ml
+  ports:
+  - port: 80
+    targetPort: 8000
+  type: LoadBalancer

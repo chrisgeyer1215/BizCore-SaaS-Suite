@@ -24,7 +24,116 @@ from apps.inventory.services.stock.movement_service import StockMovementService
 from apps.inventory.services.reports.analytics_service import AnalyticsService
 from apps.inventory.utils.exceptions import InventoryError
 from apps.inventory.utils.permissions import InventoryPermissionMixin
+from drf_spectacular.utils import extend_schema, extend_schema_view
+from ..documentation.schemas import *
+from ..documentation.serializers import *
 
+@extend_schema_view(
+    list=inventory_list_schema(
+        summary="List Products",
+        description="""
+        Retrieve a paginated list of products with advanced filtering and search capabilities.
+        
+        ## Filtering Options:
+        - **category**: Filter by category ID
+        - **brand**: Filter by brand ID  
+        - **supplier**: Filter by supplier ID
+        - **abc_classification**: Filter by ABC class (A, B, C)
+        - **is_active**: Filter by active status
+        - **has_stock**: Filter products with current stock
+        - **low_stock**: Filter products below reorder level
+        
+        ## Search:
+        Search across product name, SKU, description, and barcode fields.
+        
+        ## Ordering:
+        Available ordering fields: name, sku, cost_price, selling_price, 
+        total_stock, abc_classification, created_at, updated_at
+        
+        ## Examples:
+        - `/api/v1/products/?category=1&is_active=true&ordering=-total_stock`
+        - `/api/v1/products/?search=iPhone&abc_classification=A`
+        - `/api/v1/products/?low_stock=true&ordering=reorder_level`
+        """,
+        serializer_class=DocumentedProductSerializer,
+        additional_parameters=[
+            OpenApiParameter('category', OpenApiTypes.INT, description='Filter by category ID'),
+            OpenApiParameter('brand', OpenApiTypes.INT, description='Filter by brand ID'),
+            OpenApiParameter('abc_classification', OpenApiTypes.STR, description='Filter by ABC class'),
+            OpenApiParameter('low_stock', OpenApiTypes.BOOL, description='Filter low stock items'),
+        ]
+    ),
+    create=inventory_create_schema(
+        summary="Create Product",
+        description="""
+        Create a new product in the inventory system.
+        
+        ## Required Fields:
+        - **name**: Product name
+        - **sku**: Unique stock keeping unit
+        - **category**: Category ID
+        - **cost_price**: Purchase cost
+        - **selling_price**: Sale price
+        
+        ## Business Rules:
+        - SKU must be unique across all products
+        - Selling price should be greater than cost price
+        - Category must exist and be active
+        - Brand and supplier are optional but recommended
+        
+        ## Automatic Calculations:
+        - Profit margin is automatically calculated
+        - ABC classification will be assigned during next analysis
+        - Stock levels are tracked separately via Stock Items
+        """,
+        serializer_class=DocumentedProductSerializer
+    ),
+    retrieve=inventory_detail_schema(
+        summary="Get Product Details",
+        description="""
+        Retrieve detailed information about a specific product including:
+        
+        - Basic product information
+        - Current stock levels across all warehouses  
+        - Recent movement history
+        - ABC classification and analytics
+        - Supplier and pricing information
+        - Reorder recommendations
+        """,
+        serializer_class=DocumentedProductSerializer
+    ),
+    update=inventory_update_schema(
+        summary="Update Product",
+        description="""
+        Update product information. Supports both full updates (PUT) and partial updates (PATCH).
+        
+        ## Update Restrictions:
+        - SKU changes require administrative approval
+        - Price changes are logged for audit purposes
+        - Category changes may affect ABC classification
+        
+        ## Automatic Actions:
+        - Price change alerts are generated if thresholds exceeded
+        - Reorder levels are recalculated if cost changes significantly
+        - ABC classification may be updated if value changes substantially
+        """,
+        serializer_class=DocumentedProductSerializer
+    ),
+    destroy=inventory_delete_schema(
+        summary="Delete Product",
+        description="""
+        Delete a product from the system.
+        
+        ## Deletion Rules:
+        - Cannot delete products with current stock
+        - Cannot delete products with pending orders
+        - Cannot delete products with movement history (archive instead)
+        
+        ## Alternative: Deactivation
+        Consider setting `is_active=false` instead of deletion to maintain audit trail.
+        """
+    )
+)
 
 class CategoryViewSet(BaseInventoryViewSet, InventoryPermissionMixin):
     """

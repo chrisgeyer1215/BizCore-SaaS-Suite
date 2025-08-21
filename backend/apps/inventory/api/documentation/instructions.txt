@@ -1,0 +1,138 @@
+# Install documentation dependencies
+pip install drf-spectacular[sidecar]
+
+# Generate API schema
+python manage.py spectacular --color --file docs/openapi.yaml
+
+# Generate API documentation  
+python manage.py generate_api_docs --format both
+
+# Serve documentation locally
+python manage.py runserver
+# Visit: http://localhost:8000/api/docs/
+
+api command 
+
+
+#Testing configuration and dependencies 
+
+# requirements/test.txt
+pytest==7.4.3
+pytest-django==4.7.0
+pytest-xdist==3.5.0  # Parallel test execution
+pytest-cov==4.1.0    # Coverage reporting
+pytest-mock==3.12.0  # Mocking utilities
+pytest-factoryboy==2.6.0  # Factory integration
+pytest-asyncio==0.23.2  # Async test support
+factory-boy==3.3.0   # Test data factories
+freezegun==1.2.2     # Time mocking
+responses==0.24.1    # HTTP mocking
+mixer==7.2.2         # Alternative to factory-boy
+parameterized==0.9.0 # Parameterized tests
+selenium==4.15.2     # Browser testing
+pytest-benchmark==4.0.0  # Performance benchmarking
+python
+# pytest.ini
+[tool:pytest]
+DJANGO_SETTINGS_MODULE = config.settings.test
+python_files = tests.py test_*.py *_tests.py
+python_classes = Test* *Tests
+python_functions = test_*
+addopts = 
+    --strict-markers
+    --strict-config
+    --reuse-db
+    --nomigrations
+    --cov=apps/inventory
+    --cov-report=html
+    --cov-report=term-missing
+    --cov-report=xml
+    --cov-fail-under=85
+    --maxfail=10
+    -p no:warnings
+markers =
+    unit: Unit tests
+    integration: Integration tests
+    api: API tests
+    ml: Machine learning tests
+    performance: Performance tests
+    slow: Slow running tests
+    external: Tests requiring external services
+testpaths = apps/inventory/tests
+
+
+
+# scripts/run_all_tests.sh
+#!/bin/bash
+
+# Comprehensive test runner script for CI/CD
+
+set -e  # Exit on any error
+
+echo "🧪 Starting Comprehensive Test Suite"
+echo "=================================="
+
+# Configuration
+OUTPUT_DIR="test-results"
+COVERAGE_THRESHOLD=85
+PARALLEL_WORKERS=4
+
+# Create output directory
+mkdir -p $OUTPUT_DIR
+
+# Set Django settings for testing
+export DJANGO_SETTINGS_MODULE=config.settings.test
+
+# Run database migrations for test database
+echo "🔧 Setting up test database..."
+python manage.py migrate --settings=config.settings.test
+
+# Run different test categories
+echo "🏃 Running Unit Tests..."
+python manage.py run_tests --unit --coverage --parallel $PARALLEL_WORKERS --output-dir $OUTPUT_DIR/unit
+
+echo "🔗 Running Integration Tests..."
+python manage.py run_tests --integration --parallel $PARALLEL_WORKERS --output-dir $OUTPUT_DIR/integration
+
+echo "🤖 Running ML Tests..."
+python manage.py run_tests --ml --parallel $PARALLEL_WORKERS --output-dir $OUTPUT_DIR/ml
+
+echo "⚡ Running Performance Tests..."
+python manage.py run_tests --performance --benchmark --output-dir $OUTPUT_DIR/performance
+
+# Generate comprehensive coverage report
+echo "📊 Generating Coverage Report..."
+coverage combine $OUTPUT_DIR/*/coverage.xml
+coverage html -d $OUTPUT_DIR/coverage_html
+coverage xml -o $OUTPUT_DIR/coverage.xml
+
+# Run system benchmarks
+echo "🚀 Running System Benchmarks..."
+python manage.py benchmark_system --database --api --ml --output-file $OUTPUT_DIR/benchmarks.txt
+
+# Generate test summary
+echo "📋 Generating Test Summary..."
+python -c "
+import json
+import os
+from datetime import datetime
+
+summary = {
+    'timestamp': datetime.now().isoformat(),
+    'test_categories': ['unit', 'integration', 'ml', 'performance'],
+    'output_directory': '$OUTPUT_DIR',
+    'coverage_threshold': $COVERAGE_THRESHOLD,
+    'parallel_workers': $PARALLEL_WORKERS
+}
+
+with open('$OUTPUT_DIR/test_summary.json', 'w') as f:
+    json.dump(summary, f, indent=2)
+
+print('✅ Test summary generated')
+"
+
+echo ""
+echo "🎉 All Tests Completed Successfully!"
+echo "📊 Results available in: $OUTPUT_DIR"
+echo "📋 Coverage report: $OUTPUT_DIR/coverage_html/index.html"
+echo "🚀 Benchmark results: $OUTPUT_DIR/benchmarks.txt"

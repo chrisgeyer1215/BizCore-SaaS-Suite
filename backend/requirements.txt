@@ -70,3 +70,6 @@ qrcode>=7.4.0
 django-storages>=1.13.0 
 stripe>=5.5.0               
 paypal-rest-sdk>=1.13.1
+drf-spectacular==0.26.5
+drf-spectacular[sidecar]==0.26.5
+redoc==2.0.0
