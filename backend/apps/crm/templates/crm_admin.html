@@ -1,0 +1,246 @@
+<!-- backend/apps/crm/templates/crm_admin/dashboard.html - Enhanced Admin Dashboard -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CRM Administration Dashboard</title>
+    <link rel="stylesheet" type="text/css" href="{% load static %}{% static 'admin/css/base.css' %}">
+    <link rel="stylesheet" type="text/css" href="{% load static %}{% static 'admin/css/dashboard.css' %}">
+    <link rel="stylesheet" type="text/css" href="{% load static %}{% static 'crm_admin/css/enhanced-dashboard.css' %}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="dashboard">
+    {% load i18n static %}
+    
+    <div id="header">
+        <div id="branding">
+            <h1 id="site-name">
+                <a href="{% url 'admin:index' %}">CRM Administration Portal</a>
+            </h1>
+        </div>
+        
+        <div id="user-tools">
+            Welcome, <strong>{{ user.get_full_name|default:user.username }}</strong>
+            <a href="{% url 'admin:logout' %}">Log out</a>
+        </div>
+    </div>
+
+    <div class="breadcrumbs">
+        <a href="{% url 'admin:index' %}">Home</a> &rsaquo; Dashboard
+    </div>
+
+    <div id="content" class="colMS">
+        <h1>CRM Management Dashboard</h1>
+        
+        <!-- System Status Overview -->
+        <div class="dashboard-section">
+            <h2>System Overview</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number">{{ system_stats.total_users }}</div>
+                    <div class="stat-label">Active Users</div>
+                    <div class="stat-change positive">+5% this week</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-number">{{ system_stats.total_leads }}</div>
+                    <div class="stat-label">Total Leads</div>
+                    <div class="stat-change">{{ system_stats.new_leads_today }} new today</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-number">{{ system_stats.pipeline_value|floatformat:0 }}</div>
+                    <div class="stat-label">Pipeline Value</div>
+                    <div class="stat-change positive">+12% this month</div>
+                </div>
+                
+                <div class="stat-card">
+                    <div class="stat-number">{{ system_stats.active_campaigns }}</div>
+                    <div class="stat-label">Active Campaigns</div>
+                    <div class="stat-change">{{ system_stats.campaigns_this_week }} launched this week</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Performance Metrics -->
+        <div class="dashboard-section">
+            <h2>Performance Metrics</h2>
+            <div class="charts-container">
+                <div class="chart-card">
+                    <h3>Lead Conversion Trends</h3>
+                    <canvas id="conversionChart" width="400" height="200"></canvas>
+                </div>
+                
+                <div class="chart-card">
+                    <h3>Task Execution Status</h3>
+                    <canvas id="taskStatusChart" width="400" height="200"></canvas>
+                </div>
+                
+                <div class="chart-card">
+                    <h3>System Response Time</h3>
+                    <canvas id="responseTimeChart" width="400" height="200"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Security Alerts -->
+        {% if security_alerts %}
+        <div class="dashboard-section">
+            <h2>Security Alerts</h2>
+            <div class="alerts-container">
+                {% for alert in security_alerts %}
+                <div class="alert alert-{{ alert.severity|lower }}">
+                    <div class="alert-icon">
+                        {% if alert.severity == 'HIGH' %}🚨
+                        {% elif alert.severity == 'MEDIUM' %}⚠️
+                        {% else %}ℹ️{% endif %}
+                    </div>
+                    <div class="alert-content">
+                        <strong>{{ alert.title }}</strong>
+                        <p>{{ alert.description }}</p>
+                        <small>{{ alert.timestamp|timesince }} ago</small>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Recent Activity -->
+        <div class="dashboard-section">
+            <h2>Recent Activity</h2>
+            <div class="activity-feed">
+                {% for activity in recent_activity %}
+                <div class="activity-item">
+                    <div class="activity-icon">
+                        {% if activity.event_type == 'DATA_MODIFICATION' %}📝
+                        {% elif activity.event_type == 'TASK_EXECUTION' %}⚙️
+                        {% elif activity.event_type == 'SECURITY' %}🔒
+                        {% else %}📋{% endif %}
+                    </div>
+                    <div class="activity-content">
+                        <strong>{{ activity.user.get_full_name|default:activity.user.username }}</strong>
+                        {{ activity.description }}
+                        <div class="activity-meta">
+                            <span class="activity-time">{{ activity.timestamp|timesince }} ago</span>
+                            <span class="activity-type">{{ activity.event_type }}</span>
+                        </div>
+                    </div>
+                </div>
+                {% empty %}
+                <p>No recent activity to display.</p>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="dashboard-section">
+            <h2>Quick Actions</h2>
+            <div class="quick-actions">
+                {% for action in quick_actions %}
+                <a href="{{ action.url }}" class="action-button {{ action.class }}">
+                    <span class="action-icon">{{ action.icon }}</span>
+                    <span class="action-label">{{ action.label }}</span>
+                </a>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- System Health -->
+        <div class="dashboard-section">
+            <h2>System Health</h2>
+            <div class="health-indicators">
+                <div class="health-item">
+                    <span class="health-label">Database</span>
+                    <span class="health-status status-good">✓ Healthy</span>
+                </div>
+                <div class="health-item">
+                    <span class="health-label">Cache</span>
+                    <span class="health-status status-good">✓ Healthy</span>
+                </div>
+                <div class="health-item">
+                    <span class="health-label">Task Queue</span>
+                    <span class="health-status status-good">✓ Healthy</span>
+                </div>
+                <div class="health-item">
+                    <span class="health-label">Email Service</span>
+                    <span class="health-status status-warning">⚠ Degraded</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript for Charts and Interactions -->
+    <script>
+        // Lead Conversion Chart
+        const conversionCtx = document.getElementById('conversionChart').getContext('2d');
+        new Chart(conversionCtx, {
+            type: 'line',: {{ performance_metrics.conversion_labels|safe }},
+                datasets: [{ {{ performance_metrics.conversion_data|safe }},
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                }
+            }
+        });
+
+        // Task Status Chart
+        const taskCtx = document.getElementById('taskStatusChart').getContext('2d');
+        new Chart(taskCtx, {
+            type: '
+                labels: ['Completed', 'Running', 'Failed'],
+                datasets: [{
+                    .completed_count }},
+                        {{ task_stats.running_count }},
+                        {{ task_stats.failed_count }}
+                    ],
+                    backgroundColor: [
+                        'rgb(34, 197, 94)',
+                        'rgb(59, 130, 246)',
+                        'rgb(239, 68, 68)'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true
+            }
+        });
+
+        // Response Time Chart
+        const responseCtx = document.getElementById('responseTimeChart').getContext('2d');
+        new Chart(responseCtx, {
+            type: '_metrics.response_time_labels|safe }},
+                datasets: [{
+                    label: 'Response Time (ms)',.response_time_data|safe }},
+                    backgroundColor: 'rgba(99, 102, 241, 0.6)',
+                    borderColor: 'rgb(99, 102, 241)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        // Auto-refresh dashboard every 5 minutes
+        setTimeout(function() {
+            location.reload();
+        }, 300000);
+    </script>
+</body>
+</html>

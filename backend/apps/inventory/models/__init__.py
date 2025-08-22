@@ -19,7 +19,7 @@ from .catalog.variations import ProductVariation
 
 # Stock models
 from .stock.items import StockItem
-from .stock.movements import StockMovement, StockMovementItem
+from .stock.movements import StockMovement
 from .stock.batches import Batch, SerialNumber
 from .stock.valuations import StockValuationLayer, CostAllocation, CostAdjustment
 

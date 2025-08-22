@@ -1,577 +1,847 @@
 # ============================================================================
-# backend/apps/crm/services/integration_service.py - External Integration Service
+# backend/apps/crm/services/integration_service.py - Advanced Integration Management Service
 # ============================================================================
 
-from typing import Dict, List, Any, Optional
-from django.db import transaction
-from django.utils import timezone
-from django.core.cache import cache
-import requests
 import json
+import requests
+import hmac
 import hashlib
-from datetime import timedelta
+import base64
+from typing import Dict, List, Any, Optional, Tuple, Union, Callable
+from datetime import datetime, timedelta
+from decimal import Decimal
+from django.db import transaction, models
+from django.utils import timezone
+from django.core.exceptions import ValidationError
+from django.conf import settings
+from django.core.cache import cache
+from django.template import Template, Context
+import logging
 
-from .base import BaseService, CacheableMixin, CRMServiceException
-from ..models import Integration, SyncLog, APIUsageLog
+from .base import BaseService, ServiceException
+from ..models import (
+    Integration, IntegrationConfig, IntegrationLog, DataSync, SyncMapping,
+    WebhookEndpoint, APIKey, OAuthToken, DataTransform, IntegrationError,
+    ExternalSystem, SyncJob, FieldMapping, DataValidationRule
+)
+
+logger = logging.getLogger(__name__)
 
 
-class IntegrationService(BaseService, CacheableMixin):
-    """Service for managing external integrations and data synchronization"""
+class IntegrationException(ServiceException):
+    """Integration service specific errors"""
+    pass
+
+
+class APIConnector:
+    """Universal API connector for external systems"""
     
-    def __init__(self, tenant, user=None):
-        super().__init__(tenant, user)
-        self.supported_integrations = self._get_supported_integrations()
+    def __init__(self, integration_config: Dict):
+        self.config = integration_config
+        self.session = requests.Session()
+        self._setup_authentication()
     
-    @transaction.atomic
-    def create_integration(self, integration
-        """Create new external integration"""
+    def _setup_authentication(self):
+        """Setup authentication based on integration type"""
+        auth_type = self.config.get('auth_type', 'none')
         
-        self.require_permission('can_manage_integrations')
+        if auth_type == 'api_key':
+            api_key = self.config.get('api_key')
+            key_header = self.config.get('api_key_header', 'Authorization')
+            
+            if api_key:
+                if key_header.lower() == 'authorization':
+                    self.session.headers.update({'Authorization': f"Bearer {api_key}"})
+                else:
+                    self.session.headers.update({key_header: api_key})
         
-        integration_type = integration_data.get('integration_type')
-        if integration_type not in self.supported_integrations:
-            raise CRMServiceException(f"Unsupported integration type: {integration_type}")
+        elif auth_type == 'basic_auth':
+            username = self.config.get('username')
+            password = self.config.get('password')
+            if username and password:
+                self.session.auth = (username, password)
         
-        # Validate configuration
-        self._validate_integration_config(integration_data)
+        elif auth_type == 'oauth2':
+            access_token = self.config.get('access_token')
+            if access_token:
+                self.session.headers.update({
+                    'Authorization': f"Bearer {access_token}"
+                })
         
-        integration_data.update({
-            'tenant': self.tenant,
-            'created_by': self.user,
+        # Set common headers
+        self.session.headers.update({
+            'Content-Type': 'application/json',
+            'User-Agent': f"CRM-Integration/{settings.VERSION if hasattr(settings, 'VERSION') else '1.0'}"
         })
-        
-        integration = Integration.objects.create(**integration_data)
-        
-        # Test connection
-        test_result = self.test_integration_connection(integration.id)
-        if not test_result.get('success'):
-            integration.status = 'ERROR'
-            integration.error_message = test_result.get('error', 'Connection test failed')
-            integration.save()
-        
-        self.logger.info(f"Integration created: {integration.name} ({integration.integration_type})")
-        return integration
     
-    def test_integration_connection(self, integration_id: int) -> Dict:
-        """Test integration connection and authentication"""
-        
+    def make_request(self, method: str None, 
+                    params: Dict = None, headers: Dict = None) -> Dict:
+        """Make authenticated API request"""
         try:
-            integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
+            url = f"{self.config.get('base_url', '').rstrip('/')}/{endpoint.lstrip('/')}"
             
-            if integration.integration_type == 'EMAIL_PROVIDER':
-                return self._test_email_provider_connection(integration)
-            elif integration.integration_type == 'CRM_SYSTEM':
-                return self._test_crm_system_connection(integration)
-            elif integration.integration_type == 'ACCOUNTING_SYSTEM':
-                return self._test_accounting_system_connection(integration)
-            elif integration.integration_type == 'MARKETING_PLATFORM':
-                return self._test_marketing_platform_connection(integration)
-            elif integration.integration_type == 'SOCIAL_MEDIA':
-                return self._test_social_media_connection(integration)
+            # Merge headers
+            request_headers = self.session.headers.copy()
+            if headers:
+                request_headers.update(headers)
+            
+            # Rate limiting
+            self._handle_rate_limiting()
+            
+            # Make request
+            response = self.session.request(
+                method=method.upper(),
+                url=url,
+                json=data if method.upper() in ['POST', 'PUT', 'PATCH'] else None,
+                params=params,
+                headers=request_headers,
+                timeout=self.config.get('timeout', 30)
+            )
+            
+            # Handle response
+            if response.status_code >= 400:
+                error_data = self._extract_error_data(response)
+                raise IntegrationException(
+                    f"API request failed: {response.status_code} - {error_data.get('message', 'Unknown error')}",
+                    code=f'API_ERROR_{response.status_code}',
+                    details=error_data
+                )
+            
+            # Parse response
+            if response.headers.get('content-type', '').startswith('application/json'):
+                return response.json()
             else:
-                return self._test_generic_api_connection(integration)
+                return {'raw_response': response.text, 'status_code': response.status_code}
+            
+        except requests.RequestException as e:
+            logger.error(f"API request failed: {e}", exc_info=True)
+            raise IntegrationException(f"Network request failed: {str(e)}")
+    
+    def _handle_rate_limiting(self):
+        """Handle API rate limiting"""
+        rate_limit_key = f"api_rate_limit_{self.config.get('integration_id', 'unknown')}"
+        
+        # Simple rate limiting implementation
+        current_count = cache.get(rate_limit_key, 0)
+        rate_limit = self.config.get('rate_limit_per_minute', 60)
+        
+        if current_count >= rate_limit:
+            raise IntegrationException(
+                "Rate limit exceeded", 
+                code='RATE_LIMIT_EXCEEDED',
+                retry_after=60
+            )
+        
+        cache.set(rate_limit_key, current_count + 1, 60)  # Reset every minute
+
+
+class DataTransformer:
+    """Advanced data transformation engine"""
+    
+    def __init__(self, tenant):
+        self.tenant = tenant
+        self.transformers = {
+            'map_fields': self._map_fields,
+            'format_date': self._format_date,
+            'format_currency': self._format_currency,
+            'concatenate': self._concatenate,
+            'split_string': self._split_string,
+            'lookup_value': self._lookup_value,
+            'conditional': self._conditional_transform,
+            'calculate': self._calculate,
+            'validate': self._validate_data
+        }
+    
+    , transformation_rules: List[Dict]) -> Dict:
+        """Apply transformation rules to data"""
+        try:
+            transformed_data = data.copy()
+            
+            for rule in transformation_rules:
+                transformation_type = rule.get('type')
                 
-        except Integration.DoesNotExist:
-            return {'success': False, 'error': 'Integration not found'}
+                if transformation_type in self.transformers:
+                    transformer = self.transformers[transformation_type]
+                    transformed_data = transformer(transformed_data, rule)
+                else:
+                    logger.warning(f"Unknown transformation type: {transformation_type}")
+            
+            return transformed_data
+            
         except Exception as e:
-            return {'success': False, 'error': str(e)}
+            logger.error(f"Data transformation failed: {e}", exc_info=True)
+            raise IntegrationException(f"Data transformation failed: {str(e)}")
     
-    @transaction.atomic
-    def synchronize_data(self, integration_id: int, sync_config: Dict = None) -> Dict:
-        """Synchronize data with external system"""
+    def _map_
+        """Map fields from source to destination format"""
+        field_mappings = rule.get('mappings', {})
+        transformed = data.copy()
         
-        integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
+        for source_field, dest_field in field_mappings.items():
+            if source_fiel nested field access
+                value = self._get_nested_value(data, source_field)
+                self._set_nested_value(transformed, dest_field, value)
+                
+                # Remove original field if different
+                if source_field != dest_field and source_field in transformed:
+                    del transformed[source_field]
         
-        if not integration.is_active:
-            raise CRMServiceException("Integration is not active")
+        return, rule: Dict) -> Dict:
+        """Format date fields"""
+        field = rule.get('field')
+        input_format = rule.get('input_format', 'auto')
+        output_format = rule.get('output_format', '%Y-%m-%d')
         
-        sync_log = SyncLog.objects.create(
-            tenant=self.tenant,
-            integration_name=integration.name,
-            sync_type=sync_config.get('sync_type', 'BIDIRECTIONAL'),
-            status='RUNNING',
-            sync_data=sync_config or {}
-        )
+        if field in data and data[field]:
+            try:
+                if input_format == 'auto':
+                    # Try to parse automatically
+                    from dateutil import parser
+                    parsed_date = parser.parse(str(data[field]))
+                else:
+                    parsed_date = datetime.strptime(str(data[field]), input_format)
+                
+                data[field] = parsed_date.strftime(output_format)
+            except ValueError as e:
+                logger.warning(f"Date formatting failed for field {field}: {e}")
+        
+        return data
+    
+    , rule: Dict) -> Dict:
+        """Apply conditional transformations"""
+        field = rule.get('field')
+        conditions = rule.get('conditions', [
+            field_value = data[field]
+            
+            for condition in conditions:
+                if self._evaluate_condition(field_value, condition):
+                    transformation = condition.get('transformation', {})
+                    if transformation:
+                        data = self.transform_data(data, [transformation])
+                    break
+        
+        return data
+
+
+class SyncEngine:
+    """Advanced data synchronization engine"""
+    
+    def __init__(self, tenant, integration):
+        self.tenant = tenant
+        self.integration = integration
+        self.transformer = DataTransformer(tenant)
+    
+    def sync_data(self, sync_config: Dict) -> Dict:
+        """Execute data synchronization"""
+        try:
+            sync_type = sync_config.get('type', 'bidirectional')
+            
+            results = {
+                'sync_type': sync_type,
+                'started_at': timezone.now().isoformat(),
+                'records_processed': 0,
+                'records_synced': 0,
+                'errors': [],
+                'warnings': []
+            }
+            
+            if sync_type in ['inbound', 'bidirectional']:
+                inbound_results = self._sync_inbound_data(sync_config)
+                results.update({
+                    'inbound_processed': inbound_results.get('processed', 0),
+                    'inbound_synced': inbound_results.get('synced', 0),
+                    'inbound_errors': inbound_results.get('errors', [])
+                })
+            
+            if sync_type in ['outbound', 'bidirectional']:
+                outbound_results = self._sync_outbound_data(sync_config)
+                results.update({
+                    'outbound_processed': outbound_results.get('processed', 0),
+                    'outbound_synced': outbound_results.get('synced', 0),
+                    'outbound_errors': outbound_results.get('errors', [])
+                })
+            
+            results['completed_at'] = timezone.now().isoformat()
+            results['success_rate'] = self._calculate_success_rate(results)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Data sync failed: {e}", exc_info=True)
+            raise IntegrationException(f"Data synchronization failed: {str(e)}")
+    
+    def _sync_inbound_data(self, sync_config: Dict) -> Dict:
+        """Sync data from external system to CRM"""
+        results = {'processed': 0, 'synced': 0, 'errors': []}
         
         try:
-            if integration.integration_type == 'EMAIL_PROVIDER':
-                result = self._sync_email_provider_data(integration, sync_config)
-            elif integration.integration_type == 'CRM_SYSTEM':
-                result = self._sync_crm_system_data(integration, sync_config)
-            elif integration.integration_type == 'ACCOUNTING_SYSTEM':
-                result = self._sync_accounting_system_data(integration, sync_config)
-            elif integration.integration_type == 'MARKETING_PLATFORM':
-                result = self._sync_marketing_platform_data(integration, sync_config)
+            # Get data from external system
+            connector = APIConnector(self.integration.connection_config)
+            
+            endpoint = sync_config.get('inbound_endpoint')
+            if not endpoint:
+                return results
+            
+            # Fetch data
+            external_data = connector.make_request('GET', endpoint)
+            
+            # Handle paginated responses
+            records = self._extract_records_from_response(external_data, sync_config)
+            
+            for record in records:
+                results['processed'] += 1
+                
+                try:
+                    # Transform data
+                    transformed_record = self.transformer.transform_data(
+                        record, sync_config.get('inbound_transformations', [])
+                    )
+                    
+                    # Create or update CRM record
+                    crm_record = self._create_or_update_crm_record(
+                        transformed_record, sync_config
+                    )
+                    
+                    if crm_record:
+                        results['synced'] += 1
+                        
+                        # Log successful sync
+                        self._log_sync_record(
+                            'inbound', 'success', 
+                            external_id=record.get('id'),
+                            crm_id=crm_record.id,
+                            data=transformed_record
+                        )
+                
+                except Exception as e:
+                    results['errors'].append({
+                        'record_id': record.get('id'),
+                        'error': str(e)
+                    })
+                    
+                    self._log_sync_record(
+                        'inbound', 'error',
+                        external_id=record.get('id'),
+                        error=str(e),
+                        data=record
+                    )
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Inbound sync failed: {e}", exc_info=True)
+            results['errors'].append({'general_error': str(e)})
+            return results
+
+
+class WebhookProcessor:
+    """Advanced webhook processing system"""
+    
+    def __init__(self, tenant):
+        self.tenant = tenant
+        self.processors = {
+            'lead_created': self._process_lead_webhook,
+            'lead_updated': self._process_lead_webhook,
+            'opportunity_created': self._process_opportunity_webhook,
+            'opportunity_updated': self._process_opportunity_webhook,
+            'contact_created': self._process_contact_webhook,
+            'payment_received': self._process_payment_webhook,
+            'form_submitted': self._process_form_webhook
+        }
+    
+    def process integration: 'Integration') -> Dict:
+        """Process incoming webhook data"""
+        try:
+            # Validate webhook signature
+            if not self._validate_webhook_signature(webhook_data, integration):
+                raise IntegrationException(
+                    "Invalid webhook signature",
+                    code='WEBHOOK_SIGNATURE_INVALID'
+                )
+            
+            event_type = webhook_data.get('event_type') or self._detect_event_type(webhook_data)
+            
+            if event_type in self.processors:
+                processor = self.processors[event_type]
+                result = processor(webhook_data, integration)
             else:
-                result = self._sync_generic_system_data(integration, sync_config)
+                result = self._process_generic_webhook(webhook_data, integration)
             
-            # Update sync log
-            sync_log.status = 'COMPLETED'
-            sync_log.records_processed = result.get('records_processed', 0)
-            sync_log.records_successful = result.get('records_successful', 0)
-            sync_log.records_failed = result.get('records_failed', 0)
-            sync_log.sync_data.update(result)
-            sync_log.save()
-            
-            # Update integration last sync time
-            integration.last_sync = timezone.now()
-            integration.save()
+            # Log successful processing
+            self._log_webhook_processing(webhook_data, integration, result, 'success')
             
             return result
             
         except Exception as e:
-            sync_log.status = 'FAILED'
-            sync_log.error_details = {'error': str(e)}
-            sync_log.save()
-            
-            self.logger.error(f"Sync failed for integration {integration.name}: {str(e)}")
-            raise CRMServiceException(f"Synchronization failed: {str(e)}")
+            logger.error(f"Webhook processing failed: {e}", exc_info=True)
+            self._log_webhook_processing(webhook_data, integration, {}, 'error', str(e))
+            raise IntegrationException(f"Webhook processing failed: {str(e)}")
     
-    def import_data_from_integration(self, integration_id: int, 
-                                   import_config: Dict) -> Dict:
-        """Import data from external system"""
+    def _validate_webhook_signature(self, webhook'Integration') -> bool:
+        """Validate webhook signature for security"""
+        signature_config = integration.webhook_config.get('signature_validation', {})
         
-        integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
-        data_type = import_config.get('data_type')
+        if not signature_config.get('enabled', False):
+            return True  # Skip validation if not configured
         
-        if data_type == 'leads':
-            return self._import_leads_from_integration(integration, import_config)
-        elif data_type == 'accounts':
-            return self._import_accounts_from_integration(integration, import_config)
-        elif data_type == 'contacts':
-            return self._import_contacts_from_integration(integration, import_config)
-        elif data_type == 'opportunities':
-            return self._import_opportunities_from_integration(integration, import_config)
-        else:
-            raise CRMServiceException(f"Unsupported import data type: {data_type}")
-    
-    def export_data_to_integration(self, integration_id: int, 
-                                  export_config: Dict) -> Dict:
-        """Export data to external system"""
+        signature_header = signature_config.get('header', 'X-Signature')
+        secret = signature_config.get('secret', '')
         
-        integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
-        data_type = export_config.get('data_type')
+        received_signature = webhook_data.get('headers', {}).get(signature_header, '')
         
-        if data_type == 'leads':
-            return self._export_leads_to_integration(integration, export_config)
-        elif data_type == 'accounts':
-            return self._export_accounts_to_integration(integration, export_config)
-        elif data_type == 'contacts':
-            return self._export_contacts_to_integration(integration, export_config)
-        elif data_type == 'opportunities':
-            return self._export_opportunities_to_integration(integration, export_config)
-        else:
-            raise CRMServiceException(f"Unsupported export data type: {data_type}")
-    
-    def handle_webhook(self, integration_id: int, webhook_data: Dict, 
-                      headers: Dict = None) -> Dict:
-        """Handle incoming webhook from external system"""
-        
-        try:
-            integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
-            
-            # Verify webhook signature if configured
-            if integration.webhook_secret:
-                if not self._verify_webhook_signature(webhook_data, headers, integration.webhook_secret):
-                    raise CRMServiceException("Invalid webhook signature")
-            
-            # Process webhook based on integration type
-            if integration.integration_type == 'EMAIL_PROVIDER':
-                return self._handle_email_provider_webhook(integration, webhook_data)
-            elif integration.integration_type == 'MARKETING_PLATFORM':
-                return self._handle_marketing_platform_webhook(integration, webhook_data)
-            elif integration.integration_type == 'PAYMENT_PROCESSOR':
-                return self._handle_payment_processor_webhook(integration, webhook_data)
-            else:
-                return self._handle_generic_webhook(integration, webhook_data)
-                
-        except Integration.DoesNotExist:
-            raise CRMServiceException("Integration not found")
-    
-    def get_integration_analytics(self, integration_id: int = None, 
-                                 date_range: Dict = None) -> Dict:
-        """Get comprehensive integration analytics"""
-        
-        sync_logs = SyncLog.objects.filter(tenant=self.tenant)
-        api_logs = APIUsageLog.objects.filter(tenant=self.tenant)
-        
-        if integration_id:
-            integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
-            sync_logs = sync_logs.filter(integration_name=integration.name)
-        
-        if date_range:
-            if date_range.get('start_date'):
-                sync_logs = sync_logs.filter(created_at__gte=date_range['start_date'])
-                api_logs = api_logs.filter(created_at__gte=date_range['start_date'])
-            if date_range.get('end_date'):
-                sync_logs = sync_logs.filter(created_at__lte=date_range['end_date'])
-                api_logs = api_logs.filter(created_at__lte=date_range['end_date'])
-        
-        # Sync statistics
-        sync_stats = {
-            'total_syncs': sync_logs.count(),
-            'successful_syncs': sync_logs.filter(status='COMPLETED').count(),
-            'failed_syncs': sync_logs.filter(status='FAILED').count(),
-            'total_records_processed': sync_logs.aggregate(
-                total=models.Sum('records_processed')
-            )['total'] or 0,
-            'total_records_successful': sync_logs.aggregate(
-                total=models.Sum('records_successful')
-            )['total'] or 0,
-        }
-        
-        if sync_stats['total_syncs'] > 0:
-            sync_stats['success_rate'] = (sync_stats['successful_syncs'] / sync_stats['total_syncs']) * 100
-        
-        # API usage statistics
-        api_stats = {
-            'total_requests': api_logs.count(),
-            'successful_requests': api_logs.filter(status_code__lt=400).count(),
-            'failed_requests': api_logs.filter(status_code__gte=400).count(),
-            'average_response_time': api_logs.aggregate(
-                avg=models.Avg('response_time_ms')
-            )['avg'] or 0,
-        }
-        
-        # Integration performance by type
-        integration_performance = Integration.objects.filter(
-            tenant=self.tenant
-        ).values('integration_type', 'name').annotate(
-            sync_count=models.Count('synclog'),
-            success_rate=models.Avg(
-                models.Case(
-                    models.When(synclog__status='COMPLETED', then=100),
-                    models.When(synclog__status='FAILED', then=0),
-                    default=50,
-                    output_field=models.FloatField()
-                )
-            )
-        )
-        
-        # Recent sync activity
-        recent_syncs = sync_logs.order_by('-created_at')[:10].values(
-            'integration_name', 'sync_type', 'status', 'records_processed', 'created_at'
-        )
-        
-        return {
-            'sync_statistics': sync_stats,
-            'api_statistics': api_stats,
-            'integration_performance': list(integration_performance),
-            'recent_activity': list(recent_syncs),
-        }
-    
-    def _validate_integration_config(self
-        
-        integration_type = integration_data.get('integration_type')
-        config = integration_data.get('config', {})
-        
-        if integration_type == 'EMAIL_PROVIDER':
-            required_fields = ['api_key', 'base_url']
-        elif integration_type == 'CRM_SYSTEM':
-            required_fields = ['api_key', 'instance_url']
-        elif integration_type == 'ACCOUNTING_SYSTEM':
-            required_fields = ['client_id', 'client_secret', 'base_url']
-        elif integration_type == 'MARKETING_PLATFORM':
-            required_fields = ['api_key', 'list_id']
-        else:
-            required_fields = ['api_key', 'base_url']
-        
-        for field in required_fields:
-            if not config.get(field):
-                raise CRMServiceException(f"Missing required configuration field: {field}")
-    
-    def _test_email_provider_connection(self, integration: Integration) -> Dict:
-        """Test email provider connection"""
-        
-        config = integration.config
-        
-        try:
-            # Test API connection (example for SendGrid)
-            headers = {
-                'Authorization': f"Bearer {config.get('api_key')}",
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(
-                f"{config.get('base_url')}/user/profile",
-                headers=headers,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return {'success': True, 'message': 'Connection successful'}
-            else:
-                return {'success': False, 'error': f'API returned status {response.status_code}'}
-                
-        except requests.RequestException as e:
-            return {'success': False, 'error': str(e)}
-    
-    def _test_crm_system_connection(self, integration: Integration) -> Dict:
-        """Test CRM system connection (e.g., Salesforce)"""
-        
-        config = integration.config
-        
-        try:
-            # Test OAuth or API key authentication
-            headers = {
-                'Authorization': f"Bearer {config.get('api_key')}",
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(
-                f"{config.get('instance_url')}/services/data/v52.0/",
-                headers=headers,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return {'success': True, 'message': 'Connection successful'}
-            else:
-                return {'success': False, 'error': f'API returned status {response.status_code}'}
-                
-        except requests.RequestException as e:
-            return {'success': False, 'error': str(e)}
-    
-    def _test_accounting_system_connection(self, integration: Integration) -> Dict:
-        """Test accounting system connection (e.g., QuickBooks)"""
-        
-        config = integration.config
-        
-        try:
-            # Test OAuth connection
-            auth_data = {
-                'client_id': config.get('client_id'),
-                'client_secret': config.get('client_secret'),
-                'grant_type': 'client_credentials'
-            }
-            
-            response = requests.post(
-                f"{config.get('base_url')}/oauth2/token",
-                data=auth_data,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return {'success': True, 'message': 'Connection successful'}
-            else:
-                return {'success': False, 'error': f'Auth failed with status {response.status_code}'}
-                
-        except requests.RequestException as e:
-            return {'success': False, 'error': str(e)}
-    
-    def _test_marketing_platform_connection(self, integration: Integration) -> Dict:
-        """Test marketing platform connection (e.g., Mailchimp)"""
-        
-        config = integration.config
-        
-        try:
-            headers = {
-                'Authorization': f"apikey {config.get('api_key')}",
-                'Content-Type': 'application/json'
-            }
-            
-            response = requests.get(
-                f"{config.get('base_url')}/3.0/ping",
-                headers=headers,
-                timeout=30
-            )
-            
-            if response.status_code == 200:
-                return {'success': True, 'message': 'Connection successful'}
-            else:
-                return {'success': False, 'error': f'API returned status {response.status_code}'}
-                
-        except requests.RequestException as e:
-            return {'success': False, 'error': str(e)}
-    
-    def _test_social_media_connection(self, integration: Integration) -> Dict:
-        """Test social media API connection"""
-        
-        config = integration.config
-        platform = config.get('platform', '').lower()
-        
-        try:
-            if platform == 'linkedin':
-                headers = {
-                    'Authorization': f"Bearer {config.get('access_token')}",
-                    'Content-Type': 'application/json'
-                }
-                
-                response = requests.get(
-                    "https://api.linkedin.com/v2/me",
-                    headers=headers,
-                    timeout=30
-                )
-                
-            elif platform == 'twitter':
-                headers = {
-                    'Authorization': f"Bearer {config.get('bearer_token')}",
-                    'Content-Type': 'application/json'
-                }
-                
-                response = requests.get(
-                    "https://api.twitter.com/2/users/me",
-                    headers=headers,
-                    timeout=30
-                )
-                
-            else:
-                return {'success': False, 'error': f'Unsupported social platform: {platform}'}
-            
-            if response.status_code == 200:
-                return {'success': True, 'message': 'Connection successful'}
-            else:
-                return {'success': False, 'error': f'API returned status {response.status_code}'}
-                
-        except requests.RequestException as e:
-            return {'success': False, 'error': str(e)}
-    
-    def _test_generic_api_connection(self, integration: Integration) -> Dict:
-        """Test generic API connection"""
-        
-        config = integration.config
-        
-        try:
-            headers = {
-                'Authorization': f"Bearer {config.get('api_key')}",
-                'Content-Type': 'application/json'
-            }
-            
-            test_endpoint = config.get('test_endpoint', '/health')
-            response = requests.get(
-                f"{config.get('base_url')}{test_endpoint}",
-                headers=headers,
-                timeout=30
-            )
-            
-            if response.status_code in [200, 201]:
-                return {'success': True, 'message': 'Connection successful'}
-            else:
-                return {'success': False, 'error': f'API returned status {response.status_code}'}
-                
-        except requests.RequestException as e:
-            return {'success': False, 'error': str(e)}
-    
-    def _sync_email_provider_data(self, integration: Integration, sync_config: Dict) -> Dict:
-        """Synchronize data with email provider"""
-        
-        # This would implement specific sync logic for email providers
-        # Example: sync email engagement data, lists, campaigns, etc.
-        
-        return {
-            'records_processed': 0,
-            'records_successful': 0,
-            'records_failed': 0,
-            'sync_type': 'email_provider_sync'
-        }
-    
-    def _import_leads_from_integration(self, integration: Integration, 
-                                     import_config: Dict) -> Dict:
-        """Import leads from external system"""
-        
-        from .lead_service import LeadService
-        
-        lead_service = LeadService(self.tenant, self.user)
-        
-        # Fetch leads from external system
-        external_leads = self._fetch_external_data(integration, 'leads', import_config)
-        
-        imported_count = 0
-        failed_count = 0
-        errors = []
-        
-        for external_lead in external_leads:
-            try:
-                # Transform external lead data to CRM format
-                lead_data = self._transform_lead_data(external_lead, integration)
-                
-                # Create lead using lead service
-                lead = lead_service.create_lead(lead_data)
-                imported_count += 1
-                
-            except Exception as e:
-                failed_count += 1
-                errors.append({
-                    'external_id': external_lead.get('id'),
-                    'error': str(e)
-                })
-        
-        return {
-            'imported_count': imported_count,
-            'failed_count': failed_count,
-            'total_processed': len(external_leads),
-            'errors': errors
-        }
-    
-    def _fetch_external_data(self, integration: Integration, data_type: str, 
-                           config: Dict) -> List[Dict]:
-        """Fetch data from external system"""
-        
-        # This would implement the actual API calls to fetch data
-        # For now, return empty list as placeholder
-        
-        return []
-    
-    def _transform_lead_data(self, external_lead: Dict, integration: Integration) -> Dict:
-        """Transform external lead data to CRM format"""
-        
-        # Field mapping based on integration type
-        field_mappings = integration.config.get('field_mappings', {})
-        
-        lead_data = {}
-        for crm_field, external_field in field_mappings.items():
-            if external_field in external_lead:
-                lead_data[crm_field] = external_lead[external_field]
-        
-        return lead_data
-    
-    def _verify_webhook_signature(self, data: Dict, headers: Dict, secret: str) -> bool:
-        """Verify webhook signature for security"""
-        
-        signature = headers.get('X-Webhook-Signature', '')
-        if not signature:
+        if not received_signature or not secret:
             return False
         
         # Calculate expected signature
-        payload = json.dumps(data, sort_keys=True)
-        expected_signature = hashlib.sha256(
-            f"{secret}{payload}".encode()
+        payload = json.dumps(webhook_data.get('payload', {}), sort_keys=True)
+        expected_signature = hmac.new(
+            secret.encode('utf-8'),
+            payload.encode('utf-8'),
+            hashlib.sha256
         ).hexdigest()
         
-        return signature == expected_signature
+        return hmac.compare_digest(received_signature, expected_signature)
     
-    def _handle_email_provider_webhook(self, integration: Integration, 
-                 -> Dict:
-        """Handle webhook from email provider"""
+    def _process_lead_webhook(self, webhook_data: Dict, integration: 'Integration') -> Dict:
+        """Process lead-related webhook"""
+        from .lead_service import LeadService
         
+        payload = webhook_data.get('payload', {})
         event_type = webhook_data.get('event_type')
         
-        if event_type in ['delivered', 'opened', 'clicked', 'bounced', 'unsubscribed']:
-            # Update email engagement tracking
-            from .notification_service import NotificationService
-            
-            notification_service = NotificationService(self.tenant)
-            
-            email_id = webhook_data.get('email_id')
-            if email_id:
-                notification_service.track_email_engagement(
-                    email_id, event_type.upper(), webhook_data
-                )
+        # Transform webhook data to CRM format
+        transformer = DataTransformer(self.tenant)
+        lead_data = transformer.transform_data(
+            payload,
+            integration.webhook_config.get('lead_transformations', [])
+        )
         
-        return {'status': 'processed', 'event_type': event_type}
+        lead_service = LeadService(tenant=self.tenant, user=None)
+        
+        if event_type == 'lead_created':
+            lead = lead_service.create_lead(lead_data)
+            return {'action': 'created', 'lead_id': lead.id}
+        
+        elif event_type == 'lead_updated':
+            external_id = payload.get('id')
+            # Find existing lead by external ID
+            lead = self._find_lead_by_external_id(external_id, integration)
+            if lead:
+                updated_lead = lead_service.update_lead(lead.id, lead_data)
+                return {'action': 'updated', 'lead_id': updated_lead.id}
+        
+        return {'action': 'processed', 'result': 'no_action_taken'}
+
+
+class IntegrationService(BaseService):
+    """Comprehensive integration management service"""
     
-    def _get_supported_integrations(self) -> Dict:
-        """Get list of supported integration types"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.transformer = DataTransformer(self.tenant)
+        self.webhook_processor = WebhookProcessor(self.tenant)
+    
+    # ============================================================================
+    # INTEGRATION MANAGEMENT
+    # ============================================================================
+    
+    @transaction.atomic
+    def create_integration) -> Integration:
+        """
+        Create new integration with external system
         
-        return {
-            'EMAIL_PROVIDER': 'Email Service Providers (SendGrid, Mailgun, etc.)',
-            'CRM_SYSTEM': 'Other CRM Systems (Salesforce, HubSpot, etc.)',
-            'ACCOUNTING_SYSTEM': 'Accounting Systems (QuickBooks, Xero, etc.)',
-            'MARKETING_PLATFORM': 'Marketing Platforms (Mailchimp, Constant Contact, etc.)',
-            'SOCIAL_MEDIA': 'Social Media Platforms (LinkedIn, Twitter, etc.)',
-            'PAYMENT_PROCESSOR': 'Payment Processors (Stripe, PayPal, etc.)',
-            'CALENDAR_SYSTEM': 'Calendar Systems (Google Calendar, Outlook, etc.)',
-            'COMMUNICATION_TOOL': 'Communication Tools (Slack, Teams, etc.)',
-            'ANALYTICS_PLATFORM': 'Analytics Platforms (Google Analytics, etc.)',
-            'GENERIC_API': 'Generic REST API',
-        }
+        Args:
+        
+        Returns:
+            Integration instance
+        """
+        self.context.operation = 'create_integration'
+        
+        try:
+            self.validate_user_permission('crm.add_integration')
+            
+            # Validate required fields
+            required_fields = ['name', 'integration_type', 'connection_config']
+            is_valid, errors = self.validate_data(integration_data, {
+                field: {'required': True} for field in required_fields
+            })
+            
+            if not is_valid:
+                raise IntegrationException(f"Validation failed: {', '.join(errors)}")
+            
+            # Test connection
+            connection_test = self._test_integration_connection(integration_data['connection_config'])
+            
+            if not connection_test['success']:
+                raise IntegrationException(
+                    f"Connection test failed: {connection_test.get('error', 'Unknown error')}"
+                )
+            
+            # Create integration
+            integration = Integration.objects.create(
+                tenant=self.tenant,
+                name=integration_data['name'],
+                description=integration_data.get('description', ''),
+                integration_type=integration_data['integration_type'],
+                connection_config=integration_data['connection_config'],
+                sync_config=integration_data.get('sync_config', {}),
+                webhook_config=integration_data.get('webhook_config', {}),
+                is_active=integration_data.get('is_active', True),
+                sync_frequency=integration_data.get('sync_frequency', 'HOURLY'),
+                created_by=self.user,
+                metadata={
+                    'connection_test': connection_test,
+                    'creation_source': 'manual',
+                    'supported_operations': integration_data.get('supported_operations', [])
+                }
+            )
+            
+            # Create initial sync mappings
+            if integration_data.get('field_mappings'):
+                self._create_field_mappings(integration, integration_data['field_mappings'])
+            
+            # Set up webhooks if configured
+            if integration_data.get('webhook_config', {}).get('enabled'):
+                self._setup_webhook_endpoints(integration)
+            
+            # Create API keys if needed
+            if integration_data.get('generate_api_key'):
+                api_key = self._generate_integration_api_key(integration)
+                integration.metadata['api_key_id'] = api_key.id
+                integration.save()
+            
+            self.log_activity(
+                'integration_created',
+                'Integration',
+                integration.id,
+                {
+                    'name': integration.name,
+                    'type': integration.integration_type,
+                    'connection_successful': connection_test['success'],
+                    'webhook_enabled': integration_data.get('webhook_config', {}).get('enabled', False)
+                }
+            )
+            
+            return integration
+            
+        except Exception as e:
+            logger.error(f"Integration creation failed: {e}", exc_info=True)
+            raise IntegrationException(f"Integration creation failed: {str(e)}")
+    
+    def execute_data_sync(self, integration_id: int, sync_type: str = 'bidirectional',
+                         force_full_sync: bool = False) -> Dict:
+        """
+        Execute data synchronization for integration
+        
+        Args:
+            integration_id: Integration ID
+            sync_type: Type of sync ('inbound', 'outbound', 'bidirectional')
+            force_full_sync: Force full sync instead of incremental
+        
+        Returns:
+            Sync execution results
+        """
+        try:
+            integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
+            self.validate_user_permission('crm.change_integration', integration)
+            
+            if not integration.is_active:
+                raise IntegrationException("Integration is not active")
+            
+            # Create sync job
+            sync_job = SyncJob.objects.create(
+                integration=integration,
+                sync_type=sync_type,
+                status='RUNNING',
+                started_at=timezone.now(),
+                is_full_sync=force_full_sync,
+                tenant=self.tenant,
+                initiated_by=self.user
+            )
+            
+            try:
+                # Execute sync
+                sync_engine = SyncEngine(self.tenant, integration)
+                
+                sync_config = {
+                    **integration.sync_config,
+                    'type': sync_type,
+                    'full_sync': force_full_sync,
+                    'last_sync_timestamp': integration.last_sync_at.isoformat() if integration.last_sync_at else None
+                }
+                
+                sync_results = sync_engine.sync_data(sync_config)
+                
+                # Update sync job
+                sync_job.status = 'COMPLETED'
+                sync_job.completed_at = timezone.now()
+                sync_job.results = sync_results
+                sync_job.records_processed = sync_results.get('records_processed', 0)
+                sync_job.records_synced = sync_results.get('records_synced', 0)
+                sync_job.save()
+                
+                # Update integration last sync
+                integration.last_sync_at = timezone.now()
+                integration.save()
+                
+                self.log_activity(
+                    'data_sync_executed',
+                    'Integration',
+                    integration.id,
+                    {
+                        'sync_type': sync_type,
+                        'records_processed': sync_results.get('records_processed', 0),
+                        'records_synced': sync_results.get('records_synced', 0),
+                        'success_rate': sync_results.get('success_rate', 0)
+                    }
+                )
+                
+                return {
+                    'sync_job_id': sync_job.id,
+                    'integration_name': integration.name,
+                    **sync_results
+                }
+                
+            except Exception as e:
+                # Update sync job on failure
+                sync_job.status = 'FAILED'
+                sync_job.completed_at = timezone.now()
+                sync_job.error_message = str(e)
+                sync_job.save()
+                raise
+                
+        except Integration.DoesNotExist:
+            raise IntegrationException("Integration not found")
+        except Exception as e:
+            logger.error(f"Data sync execution failed: {e}", exc_info=True)
+            raise IntegrationException(f"Data sync execution failed: {str(e)}")
+    
+    # ============================================================================
+    # WEBHOOK MANAGEMENT
+    # ============================================================================
+    
+    def process_incoming_webhook(self, integration"""
+        Process incoming webhook from external system
+        
+        Args: payload and metadata
+        
+        Returns:
+            Processing results
+        """
+        try:
+            integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
+            
+            if not integration.is_active:
+                raise IntegrationException("Integration is not active")
+            
+            # Process webhook
+            processing_results = self.webhook_processor.process_webhook(webhook_data, integration)
+            
+            # Update integration statistics
+            self._update_integration_stats(integration, 'webhook_processed')
+            
+            return {
+                'integration_id': integration.id,
+                'integration_name': integration.name,
+                'processed_at': timezone.now().isoformat(),
+                'processing_results': processing_results
+            }
+            
+        except Integration.DoesNotExist:
+            raise IntegrationException("Integration not found")
+        except Exception as e:
+            logger.error(f"Webhook processing failed: {e}", exc_info=True)
+            raise IntegrationException(f"Webhook processing failed: {str(e)}")
+    
+    def create_outbound_webhook(self, integration_id: int, event_type: str, 
+                              target_url: str, data: Dict) -> Dict:
+        """
+        Send outbound webhook to external system
+        
+        Args:
+            integration_id: Integration ID
+            event_type: Type of event
+            target_url: Webhook URL
+            Webhook delivery results
+        """
+        try:
+            integration = Integration.objects.get(id=integration_id, tenant=self.tenant)
+            
+            # Transform data for external system
+            transformed_data = self.transformer.transform_data(
+                data,
+                integration.webhook_config.get('outbound_transformations', [])
+            )
+            
+            # Prepare webhook payload
+            webhook_payload = {
+                'event_type': event_type,
+                'timestamp': timezone.now().isoformat(),
+                'tenant_id': str(self.tenant.id),
+                'data': transformed_data
+            }
+            
+            # Add signature if configured
+            if integration.webhook_config.get('signature', {}).get('enabled'):
+                signature = self._generate_webhook_signature(
+                    webhook_payload,
+                    integration.webhook_config['signature']['secret']
+                )
+                headers = {'X-Signature': signature}
+            else:
+                headers = {}
+            
+            # Send webhook
+            connector = APIConnector(integration.connection_config)
+            response = connector.make_request(
+                'POST',
+                target_url,
+                data=webhook_payload,
+                headers=headers
+            )
+            
+            # Log webhook delivery
+            self._log_webhook_delivery(
+                integration, event_type, target_url, 
+                webhook_payload, response, 'success'
+            )
+            
+            return {
+                'delivered': True,
+                'response_status': response.get('status_code', 200),
+                'delivered_at': timezone.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Outbound webhook failed: {e}", exc_info=True)
+            
+            # Log failed delivery
+            self._log_webhook_delivery(
+                integration, event_type, target_url,
+                data, {}, 'error', str(e)
+            )
+            
+            raise IntegrationException(f"Webhook delivery failed: {str(e)}")
+    
+    # ============================================================================
+    # INTEGRATION ANALYTICS AND MONITORING
+    # ============================================================================
+    
+    def get_integration_health_dashboard(self, integration_id: int = None) -> Dict:
+        """
+        Get comprehensive integration health dashboard
+        
+        Args:
+            integration_id: Specific integration (all integrations if None)
+        
+        Returns:
+            Integration health dashboard data
+        """
+        try:
+            # Build query
+            integrations_query = Integration.objects.filter(tenant=self.tenant)
+            if integration_id:
+                integrations_query = integrations_query.filter(id=integration_id)
+            
+            dashboard_data = {
+                'generated_at': timezone.now().isoformat(),
+                'scope': 'single' if integration_id else 'all',
+                'integrations': []
+            }
+            
+            for integration in integrations_query:
+                integration_health = {
+                    'integration_id': integration.id,
+                    'name': integration.name,
+                    'type': integration.integration_type,
+                    'is_active': integration.is_active,
+                    'last_sync': integration.last_sync_at.isoformat() if integration.last_sync_at else None,
+                    'health_score': self._calculate_integration_health_score(integration),
+                    'sync_statistics': self._get_sync_statistics(integration),
+                    'webhook_statistics': self._get_webhook_statistics(integration),
+                    'error_analysis': self._get_error_analysis(integration),
+                    'performance_metrics': self._get_performance_metrics(integration)
+                }
+                
+                dashboard_data['integrations'].append(integration_health)
+            
+            # Overall summary
+            if not integration_id:
+                dashboard_data['summary'] = self._generate_integrations_summary(
+                    dashboard_data['integrations']
+                )
+            
+            return dashboard_data
+            
+        except Exception as e:
+            logger.error(f"Integration health dashboard failed: {e}", exc_info=True)
+            raise IntegrationException(f"Health dashboard generation failed: {str(e)}")
+    
+    # ============================================================================
+    # HELPER METHODS
+    # ============================================================================
+    
+    def _test_integration_connection(self, connection_config: Dict) -> Dict:
+        """Test integration connection"""
+        try:
+            connector = APIConnector(connection_config)
+            
+            # Use test endpoint if specified
+            test_endpoint = connection_config.get('test_endpoint', '/health')
+            
+            response = connector.make_request('GET', test_endpoint)
+            
+            return {
+                'success': True,
+                'response_time': 200,  # Would be measured
+                'status_code': response.get('status_code', 200),
+                'tested_at': timezone.now().isoformat()
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'tested_at': timezone.now().isoformat()
+            }
+    
+    def _calculate_integration_health_score(self, integration: Integration) -> int:
+        """Calculate integration health score (0-100)"""
+        score = 100
+        
+        # Check if active
+        if not integration.is_active:
+            score -= 50
+        
+        # Check last sync time
+        if integration.last_sync_at:
+            days_since_sync = (timezone.now() - integration.last_sync_at).days
+            if days_since_sync > 7:
+                score -= 30
+            elif days_since_sync > 3:
+                score -= 15
+        else:
+            score -= 25  # Never synced
+        
+        # Check recent errors
+        recent_errors = IntegrationError.objects.filter(
+            integration=integration,
+            created_at__gte=timezone.now() - timedelta(days=7)
+        ).count()
+        
+        if recent_errors > 10:
+            score -= 20
+        elif recent_errors > 5:
+            score -= 10
+        
+        return max(0, score)
+    
+    def _generate_webhook_signature(self, payload: Dict, secret: str) -> str:
+        """Generate webhook signature for outbound webhooks"""
+        payload_string = json.dumps(payload, sort_keys=True)
+        signature = hmac.new(
+            secret.encode('utf-8'),
+            payload_string.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+        return signature

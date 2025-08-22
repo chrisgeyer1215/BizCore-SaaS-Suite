@@ -1,8 +1,8 @@
 # apps/ecommerce/models/__init__.py
 
 """
-E-commerce models for SaaS-AICE platform
-Multi-tenant e-commerce functionality with Shopify-like features
+AI-Powered E-commerce models for SaaS-AICE platform
+Multi-tenant e-commerce functionality with advanced AI capabilities
 """
 
 # Import only available model modules to avoid runtime ImportError
@@ -12,6 +12,7 @@ from .products import *  # noqa: F401,F403
 from .collections import *  # noqa: F401,F403
 from .cart import *  # noqa: F401,F403
 from .managers import *  # noqa: F401,F403
+from .system import *  # noqa: F401,F403
 
 # Optional modules (not yet implemented) – ignore if missing
 for _module in (
@@ -28,17 +29,23 @@ __all__ = [
     # Settings
     'EcommerceSettings',
 
-    # Products & Collections
+    # AI-Enhanced Products & Collections
     'EcommerceProduct', 'ProductVariant', 'ProductOption', 'ProductOptionValue',
     'ProductImage', 'ProductSEO', 'ProductMetric', 'ProductTag',
-    'ProductBundle', 'BundleItem',
+    'ProductBundle', 'BundleItem', 'AIProductRecommendation', 'AIProductInsights',
     'Collection', 'CollectionProduct', 'CollectionRule', 'CollectionImage',
     'CollectionSEO', 'CollectionMetrics',
 
-    # Cart & Wishlist
+    # AI-Powered Cart & Wishlist
     'Cart', 'CartItem', 'Wishlist', 'WishlistItem', 'SavedForLater',
     'CartAbandonmentEvent', 'CartShare',
 
-    # Managers & Querysets
-    'PublishedProductManager', 'OrderQuerySet', 'OrderManager', 'CartManager', 'ReviewManager',
+    # AI-Enhanced Managers & Querysets
+    'AIOptimizedProductManager', 'IntelligentOrderQuerySet', 'IntelligentOrderManager', 
+    'IntelligentCartManager', 'IntelligentCollectionManager', 'IntelligentReviewManager',
+    'IntelligentShippingManager', 'IntelligentWishlistManager',
+
+    # AI System Management Models
+    'AISystemConfiguration', 'AIPerformanceMonitor', 'AIModelRegistry', 'AIJobQueue',
+    'AIAnalyticsDashboard', 'AIAuditLog', 'AISystemHealthCheck',
 ]

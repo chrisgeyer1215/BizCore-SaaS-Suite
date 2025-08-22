@@ -1,0 +1,1107 @@
+# ============================================================================
+# backend/apps/crm/services/activity_service.py - Comprehensive Activity Management Service
+# ============================================================================
+
+import json
+import pytz
+from typing import Dict, List, Any, Optional, Tuple, Union
+from datetime import datetime, timedelta, time, date
+from decimal import Decimal
+from django.db import transaction, models
+from django.utils import timezone
+from django.core.exceptions import ValidationError
+from django.db.models import Q, Count, Sum, Avg, F, Case, When, Max, Min
+from django.contrib.auth import get_user_model
+from django.core.cache import cache
+from django.template import Template, Context
+import pandas as pd
+import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+import logging
+
+from .base import BaseService, ServiceException
+from ..models import (
+    Activity, ActivityType, EmailTemplate, EmailLog, CallLog, SMSLog,
+    ActivityParticipant, ActivityReminder, ActivitySeries, ActivityGoal,
+    ActivityMetric, CommunicationThread, ActivityInsight, ProductivityScore,
+    Lead, Account, Opportunity, Contact, Campaign, Territory, Team
+)
+
+logger = logging.getLogger(__name__)
+User = get_user_model()
+
+
+class ActivityException(ServiceException):
+    """Activity service specific errors"""
+    pass
+
+
+class IntelligentScheduler:
+    """AI-powered intelligent activity scheduling system"""
+    
+    def __init__(self, tenant, user):
+        self.tenant = tenant
+        self.user = user
+        
+    def find_optimal_meeting_time(self, participants: List[int], duration_minutes: int,
+                                 preferred_times: Dict = None, date_range: Tuple[date, date] = None) -> Dict:
+        """Find optimal meeting time for multiple participants"""
+        try:
+            # Default to next 7 days if no range specified
+            if not date_range:
+                start_date = timezone.now().date()
+                end_date = start_date + timedelta(days=7)
+                date_range = (start_date, end_date)
+            
+            # Get participant availability
+            participant_schedules = {}
+            for participant_id in participants:
+                schedule = self._get_user_availability(participant_id, date_range)
+                participant_schedules[participant_id] = schedule
+            
+            # Find overlapping free time slots
+            optimal_slots = self._find_overlapping_slots(
+                participant_schedules, duration_minutes, preferred_times or {}
+            )
+            
+            # Score and rank slots
+            scored_slots = self._score_time_slots(optimal_slots, participants, preferred_times or {})
+            
+            return {
+                'optimal_slots': scored_slots[:5],  # Top 5 suggestions
+                'participants_count': len(participants),
+                'analysis_period': f"{date_range[0]} to {date_range[1]}",
+                'total_slots_found': len(optimal_slots)
+            }
+            
+        except Exception as e:
+            logger.error(f"Optimal meeting time calculation failed: {e}", exc_info=True)
+            raise ActivityException(f"Meeting scheduling failed: {str(e)}")
+    
+    def suggest_follow_up_timing(self, related_object: Any, activity_type: str) -> Dict:
+        """AI-powered follow-up timing suggestions"""
+        try:
+            suggestions = []
+            
+            # Get object history and patterns
+            history = self._analyze_object_activity_history(related_object)
+            
+            # Business logic for different scenarios
+            if isinstance(related_object, Lead):
+                suggestions = self._suggest_lead_follow_up(related_object, activity_type, history)
+            elif isinstance(related_object, Opportunity):
+                suggestions = self._suggest_opportunity_follow_up(related_object, activity_type, history)
+            elif isinstance(related_object, Account):
+                suggestions = self._suggest_account_follow_up(related_object, activity_type, history)
+            
+            # Add AI-based timing optimization
+            optimized_suggestions = self._optimize_timing_with_ai(suggestions, related_object)
+            
+            return {
+                'suggestions': optimized_suggestions,
+                'confidence_score': self._calculate_suggestion_confidence(optimized_suggestions, history),
+                'based_on': 'historical_patterns_and_ai',
+                'generated_at': timezone.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Follow-up timing suggestion failed: {e}", exc_info=True)
+            return {'suggestions': [], 'error': str(e)}
+    
+    def _get_user_availability(self, user_id: int, date_range: Tuple[date, date]) -> Dict:
+        """Get user availability for date range"""
+        start_date, end_date = date_range
+        
+        # Get user's existing activities
+        existing_activities = Activity.objects.filter(
+            assigned_to_id=user_id,
+            tenant=self.tenant,
+            start_datetime__date__range=[start_date, end_date],
+            status__in=['PLANNED', 'IN_PROGRESS']
+        ).values('start_datetime', 'end_datetime')
+        
+        # Build availability map (simplified - in reality would be more complex)
+        availability = {}
+        current_date = start_date
+        
+        while current_date <= end_date:
+            # Default working hours: 9 AM - 5 PM
+            day_availability = []
+            
+            # Create 30-minute slots
+            for hour in range(9, 17):  # 9 AM to 5 PM
+                for minute in [0, 30]:
+                    slot_start = timezone.make_aware(
+                        datetime.combine(current_date, time(hour, minute))
+                    )
+                    slot_end = slot_start + timedelta(minutes=30)
+                    
+                    # Check if slot conflicts with existing activities
+                    conflict = any(
+                        slot_start < activity['end_datetime'] and slot_end > activity['start_datetime']
+                        for activity in existing_activities
+                        if activity['start_datetime'] and activity['end_datetime']
+                    )
+                    
+                    if not conflict:
+                        day_availability.append({
+                            'start': slot_start,
+                            'end': slot_end,
+                            'available': True
+                        })
+            
+            availability[current_date.isoformat()] = day_availability
+            current_date += timedelta(days=1)
+        
+        return availability
+    
+    def _suggest_lead_follow_up(self, lead: Lead, activity_type: str, history: Dict) -> List[Dict]:
+        """Generate lead-specific follow-up suggestions"""
+        suggestions = []
+        
+        # Lead score based timing
+        lead_score = getattr(lead, 'score', 50)
+        
+        if lead_score >= 80:  # Hot leads
+            if activity_type == 'call':
+                suggestions.extend([
+                    {'timing': 'within_2_hours', 'priority': 'high', 'reason': 'Hot lead - immediate follow-up'},
+                    {'timing': 'same_day', 'priority': 'high', 'reason': 'Hot lead backup timing'},
+                ])
+            elif activity_type == 'email':
+                suggestions.extend([
+                    {'timing': 'within_1_hour', 'priority': 'high', 'reason': 'Hot lead - quick email follow-up'},
+                    {'timing': 'within_4_hours', 'priority': 'medium', 'reason': 'Hot lead - detailed email'},
+                ])
+        
+        elif lead_score >= 60:  # Warm leads
+            if activity_type == 'call':
+                suggestions.extend([
+                    {'timing': 'within_24_hours', 'priority': 'medium', 'reason': 'Warm lead - next business day'},
+                    {'timing': 'within_48_hours', 'priority': 'medium', 'reason': 'Warm lead - follow-up window'},
+                ])
+            elif activity_type == 'email':
+                suggestions.extend([
+                    {'timing': 'within_12_hours', 'priority': 'medium', 'reason': 'Warm lead - timely response'},
+                    {'timing': 'within_24_hours', 'priority': 'low', 'reason': 'Warm lead - standard timing'},
+                ])
+        
+        else:  # Cold leads
+            suggestions.extend([
+                {'timing': 'within_3_days', 'priority': 'low', 'reason': 'Cold lead - nurturing sequence'},
+                {'timing': 'within_1_week', 'priority': 'low', 'reason': 'Cold lead - periodic check-in'},
+            ])
+        
+        # Source-based adjustments
+        if hasattr(lead, 'source') and lead.source:
+            if 'webinar' in lead.source.name.lower():
+                # Webinar leads need faster follow-up
+                suggestions.insert(0, {
+                    'timing': 'within_30_minutes',
+                    'priority': 'urgent',
+                    'reason': 'Webinar lead - strike while hot'
+                })
+        
+        return suggestions
+    
+    def _suggest_opportunity_follow_up(self, opportunity: Opportunity, activity_type: str, history: Dict) -> List[Dict]:
+        """Generate opportunity-specific follow-up suggestions"""
+        suggestions = []
+        
+        # Stage-based timing
+        stage_name = opportunity.stage.name.lower() if opportunity.stage else ''
+        
+        if 'proposal' in stage_name or 'quote' in stage_name:
+            suggestions.extend([
+                {'timing': 'within_24_hours', 'priority': 'high', 'reason': 'Proposal stage - maintain momentum'},
+                {'timing': 'within_3_days', 'priority': 'medium', 'reason': 'Proposal follow-up window'},
+                {'timing': 'within_1_week', 'priority': 'medium', 'reason': 'Proposal review period'},
+            ])
+        
+        elif 'negotiation' in stage_name:
+            suggestions.extend([
+                {'timing': 'within_12_hours', 'priority': 'urgent', 'reason': 'Active negotiation - quick response'},
+                {'timing': 'same_day', 'priority': 'high', 'reason': 'Negotiation momentum'},
+            ])
+        
+        elif 'closing' in stage_name or 'decision' in stage_name:
+            suggestions.extend([
+                {'timing': 'within_2_hours', 'priority': 'urgent', 'reason': 'Decision stage - immediate attention'},
+                {'timing': 'within_4_hours', 'priority': 'urgent', 'reason': 'Decision stage - backup timing'},
+            ])
+        
+        # Amount-based priority
+        if opportunity.amount and opportunity.amount >= 50000:
+            # High-value opportunities get priority treatment
+            for suggestion in suggestions:
+                if suggestion['priority'] != 'urgent':
+                    suggestion['priority'] = 'high'
+                suggestion['reason'] += ' (High-value opportunity)'
+        
+        # Close date proximity
+        if opportunity.close_date:
+            days_to_close = (opportunity.close_date - timezone.now().date()).days
+            
+            if days_to_close <= 7:
+                suggestions.insert(0, {
+                    'timing': 'within_2_hours',
+                    'priority': 'urgent',
+                    'reason': f'Closing in {days_to_close} days - urgent follow-up'
+                })
+            elif days_to_close <= 14:
+                suggestions.insert(0, {
+                    'timing': 'within_12_hours',
+                    'priority': 'high',
+                    'reason': f'Closing in {days_to_close} days - priority follow-up'
+                })
+        
+        return suggestions
+
+
+class CommunicationIntelligence:
+    """Advanced communication intelligence and analytics"""
+    
+    def __init__(self, tenant):
+        self.tenant = tenant
+    
+    def analyze_communication_patterns(self, user_id: int = None, period_days: int = 90) -> Dict:
+        """Analyze communication patterns and effectiveness"""
+        try:
+            start_date = timezone.now() - timedelta(days=period_days)
+            
+            # Build base query
+            activities_query = Activity.objects.filter(
+                tenant=self.tenant,
+                created_at__gte=start_date,
+                activity_type__category__in=['EMAIL', 'CALL', 'MEETING', 'SMS']
+            )
+            
+            if user_id:
+                activities_query = activities_query.filter(assigned_to_id=user_id)
+            
+            # Communication volume analysis
+            volume_analysis = self._analyze_communication_volume(activities_query)
+            
+            # Response time analysis
+            response_analysis = self._analyze_response_times(activities_query)
+            
+            # Effectiveness analysis
+            effectiveness_analysis = self._analyze_communication_effectiveness(activities_query)
+            
+            # Channel preference analysis
+            channel_analysis = self._analyze_channel_preferences(activities_query)
+            
+            # Timing analysis
+            timing_analysis = self._analyze_optimal_timing(activities_query)
+            
+            # Generate insights and recommendations
+            insights = self._generate_communication_insights(
+                volume_analysis, response_analysis, effectiveness_analysis
+            )
+            
+            return {
+                'analysis_period': f'{period_days} days',
+                'user_specific': user_id is not None,
+                'volume_analysis': volume_analysis,
+                'response_analysis': response_analysis,
+                'effectiveness_analysis': effectiveness_analysis,
+                'channel_analysis': channel_analysis,
+                'timing_analysis': timing_analysis,
+                'insights': insights,
+                'generated_at': timezone.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Communication pattern analysis failed: {e}", exc_info=True)
+            raise ActivityException(f"Communication analysis failed: {str(e)}")
+    
+    def _analyze_communication_volume(self, activities_query) -> Dict:
+        """Analyze communication volume patterns"""
+        # Daily volume
+        daily_volume = activities_query.extra({
+            'day': "DATE(created_at)"
+        }).values('day').annotate(
+            count=Count('id')
+        ).order_by('day')
+        
+        # Channel distribution
+        channel_distribution = activities_query.values(
+            'activity_type__category'
+        ).annotate(
+            count=Count('id')
+        ).order_by('-count')
+        
+        # Hourly patterns
+        hourly_patterns = activities_query.extra({
+            'hour': "EXTRACT(hour FROM created_at)"
+        }).values('hour').annotate(
+            count=Count('id')
+        ).order_by('hour')
+        
+        return {
+            'daily_volume': list(daily_volume),
+            'channel_distribution': list(channel_distribution),
+            'hourly_patterns': list(hourly_patterns),
+            'total_activities': activities_query.count()
+        }
+
+
+class ActivityProductivityEngine:
+    """Activity productivity analysis and optimization"""
+    
+    def __init__(self, tenant):
+        self.tenant = tenant
+    
+    def calculate_productivity_score(self, user_id: int, period_days: int = 30) -> Dict:
+        """Calculate comprehensive productivity score for user"""
+        try:
+            start_date = timezone.now() - timedelta(days=period_days)
+            
+            # Get user activities
+            activities = Activity.objects.filter(
+                assigned_to_id=user_id,
+                tenant=self.tenant,
+                created_at__gte=start_date
+            )
+            
+            # Calculate different productivity metrics
+            completion_score = self._calculate_completion_score(activities)
+            quality_score = self._calculate_activity_quality_score(activities)
+            efficiency_score = self._calculate_efficiency_score(activities)
+            impact_score = self._calculate_business_impact_score(activities)
+            consistency_score = self._calculate_consistency_score(activities)
+            
+            # Weighted overall score
+            weights = {
+                'completion': 0.25,
+                'quality': 0.20,
+                'efficiency': 0.20,
+                'impact': 0.25,
+                'consistency': 0.10
+            }
+            
+            overall_score = (
+                completion_score * weights['completion'] +
+                quality_score * weights['quality'] +
+                efficiency_score * weights['efficiency'] +
+                impact_score * weights['impact'] +
+                consistency_score * weights['consistency']
+            )
+            
+            # Generate insights
+            insights = self._generate_productivity_insights(
+                user_id, {
+                    'completion': completion_score,
+                    'quality': quality_score,
+                    'efficiency': efficiency_score,
+                    'impact': impact_score,
+                    'consistency': consistency_score,
+                    'overall': overall_score
+                }
+            )
+            
+            return {
+                'user_id': user_id,
+                'period_days': period_days,
+                'scores': {
+                    'overall': round(overall_score, 2),
+                    'completion': round(completion_score, 2),
+                    'quality': round(quality_score, 2),
+                    'efficiency': round(efficiency_score, 2),
+                    'impact': round(impact_score, 2),
+                    'consistency': round(consistency_score, 2)
+                },
+                'insights': insights,
+                'benchmarking': self._get_productivity_benchmarks(user_id, overall_score),
+                'calculated_at': timezone.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Productivity score calculation failed: {e}", exc_info=True)
+            raise ActivityException(f"Productivity calculation failed: {str(e)}")
+    
+    def _calculate_completion_score(self, activities) -> float:
+        """Calculate activity completion score"""
+        total_activities = activities.count()
+        if total_activities == 0:
+            return 0.0
+        
+        completed_activities = activities.filter(status='COMPLETED').count()
+        completion_rate = (completed_activities / total_activities) * 100
+        
+        # Bonus for completing activities on time
+        on_time_completions = activities.filter(
+            status='COMPLETED',
+            completed_at__lte=F('due_date')
+        ).count()
+        
+        on_time_bonus = (on_time_completions / total_activities) * 10 if total_activities > 0 else 0
+        
+        return min(100.0, completion_rate + on_time_bonus)
+    
+    def _calculate_activity_quality_score(self, activities) -> float:
+        """Calculate activity quality based on outcomes"""
+        quality_indicators = 0
+        total_scored_activities = 0
+        
+        for activity in activities.filter(status='COMPLETED'):
+            total_scored_activities += 1
+            
+            # Quality indicators
+            if activity.outcome == 'SUCCESSFUL':
+                quality_indicators += 100
+            elif activity.outcome == 'PARTIALLY_SUCCESSFUL':
+                quality_indicators += 70
+            elif activity.outcome == 'NO_RESULT':
+                quality_indicators += 30
+            else:
+                quality_indicators += 50  # Default
+            
+            # Bonus for detailed notes
+            if activity.notes and len(activity.notes) > 100:
+                quality_indicators += 10
+            
+            # Bonus for follow-up activities created
+            follow_ups = Activity.objects.filter(
+                tenant=self.tenant,
+                parent_activity=activity
+            ).count()
+            quality_indicators += min(20, follow_ups * 5)
+        
+        return (quality_indicators / total_scored_activities) if total_scored_activities > 0 else 50.0
+
+
+class ActivityService(BaseService):
+    """Comprehensive activity management service with advanced intelligence"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scheduler = IntelligentScheduler(self.tenant, self.user)
+        self.communication_intelligence = CommunicationIntelligence(self.tenant)
+        self.productivity_engine = ActivityProductivityEngine(self.tenant)
+    
+    # ============================================================================
+    # CORE ACTIVITY MANAGEMENT
+    # ============================================================================
+    
+    @transaction.atomic
+    def create_intelligent_activity(self, activity_data: Dict, 
+                                  auto_optimize: bool = True) -> Activity:
+        """
+        Create activity with AI-powered optimization and intelligent defaults
+        
+        Args:
+             AI optimization
+        
+        Returns:
+            Activity instance with intelligent enhancements
+        """
+        self.context.operation = 'create_intelligent_activity'
+        
+        try:
+            self.validate_user_permission('crm.add_activity')
+            
+            # Validate required fields
+            required_fields = ['subject', 'activity_type_id']
+            is_valid, errors = self.validate_data(activity_data, {
+                field: {'required': True} for field in required_fields
+            })
+            
+            if not is_valid:
+                raise ActivityException(f"Validation failed: {', '.join(errors)}")
+            
+            # AI-powered enhancements
+            if auto_optimize:
+                activity_data = self._apply_intelligent_defaults(activity_data)
+            
+            # Create base activity
+            activity = Activity.objects.create(
+                tenant=self.tenant,
+                subject=activity_data['subject'],
+                description=activity_data.get('description', ''),
+                activity_type_id=activity_data['activity_type_id'],
+                status=activity_data.get('status', 'PLANNED'),
+                priority=activity_data.get('priority', 'MEDIUM'),
+                start_datetime=activity_data.get('start_datetime'),
+                end_datetime=activity_data.get('end_datetime'),
+                due_date=activity_data.get('due_date'),
+                assigned_to_id=activity_data.get('assigned_to_id', self.user.id),
+                created_by=self.user,
+                
+                # Related objects
+                lead_id=activity_data.get('lead_id'),
+                account_id=activity_data.get('account_id'),
+                opportunity_id=activity_data.get('opportunity_id'),
+                contact_id=activity_data.get('contact_id'),
+                campaign_id=activity_data.get('campaign_id'),
+                
+                # AI enhancements
+                ai_confidence_score=activity_data.get('ai_confidence_score', 0.0),
+                predicted_duration=activity_data.get('predicted_duration'),
+                optimal_timing=activity_data.get('optimal_timing', {}),
+                
+                metadata={
+                    'creation_source': 'intelligent_system',
+                    'auto_optimized': auto_optimize,
+                    'enhancement_version': '2.0',
+                    **(activity_data.get('metadata', {}))
+                }
+            )
+            
+            # Create intelligent reminders
+            if activity_data.get('create_smart_reminders', True):
+                self._create_intelligent_reminders(activity)
+            
+            # Add participants
+            if activity_data.get('participants'):
+                self._add_activity_participants(activity, activity_data['participants'])
+            
+            # Create communication thread
+            if activity_data.get('create_thread', True):
+                self._create_communication_thread(activity)
+            
+            # Generate follow-up suggestions
+            follow_up_suggestions = self._generate_follow_up_suggestions(activity)
+            
+            # Update productivity metrics
+            self._update_user_productivity_metrics(activity.assigned_to, 'activity_created')
+            
+            self.log_activity(
+                'intelligent_activity_created',
+                'Activity',
+                activity.id,
+                {
+                    'subject': activity.subject,
+                    'activity_type': activity.activity_type.name,
+                    'auto_optimized': auto_optimize,
+                    'ai_confidence_score': activity.ai_confidence_score,
+                    'follow_up_suggestions_count': len(follow_up_suggestions)
+                }
+            )
+            
+            return activity
+            
+        except Exception as e:
+            logger.error(f"Intelligent activity creation failed: {e}", exc_info=True)
+            raise ActivityException(f"Activity creation failed: {str(e)}")
+    
+    def schedule_optimal_meeting(self, meeting               participants: List[int]) -> Dict:
+        """
+        Schedule meeting with optimal timing for all participants
+        
+        Args:
+            participants: List of participant user IDs
+        
+        Returns:
+            Meeting scheduling results with optimal times
+        """
+        try:
+            self.validate_user_permission('crm.add_activity')
+            
+            # Find optimal meeting times
+            optimal_times = self.scheduler.find_optimal_meeting_time(
+                participants=participants,
+                duration_minutes=meeting_data.get('duration_minutes', 60),
+                preferred_times=meeting_data.get('preferred_times', {}),
+                date_range=meeting_data.get('date_range')
+            )
+            
+            # Create meeting if optimal time found
+            meeting_activity = None
+            if optimal_times['optimal_slots']:
+                best_slot = optimal_times['optimal_slots'][0]
+                
+                meeting_activity_data = {
+                    **meeting_data,
+                    'start_datetime': best_slot['start_time'],
+                    'end_datetime': best_slot['end_time'],
+                    'activity_type_id': meeting_data.get('activity_type_id', self._get_meeting_activity_type_id()),
+                    'participants': [{'user_id': pid, 'role': 'participant'} for pid in participants],
+                    'ai_confidence_score': best_slot['confidence_score'],
+                    'optimal_timing': {
+                        'optimization_score': best_slot['score'],
+                        'selected_from_options': len(optimal_times['optimal_slots'])
+                    }
+                }
+                
+                meeting_activity = self.create_intelligent_activity(meeting_activity_data)
+                
+                # Send meeting invitations
+                self._send_meeting_invitations(meeting_activity, participants)
+            
+            return {
+                'meeting_scheduled': meeting_activity is not None,
+                'meeting_id': meeting_activity.id if meeting_activity else None,
+                'optimal_times': optimal_times,
+                'participants_notified': len(participants) if meeting_activity else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Optimal meeting scheduling failed: {e}", exc_info=True)
+            raise ActivityException(f"Meeting scheduling failed: {str(e)}")
+    
+    # ============================================================================
+    # ADVANCED COMMUNICATION MANAGEMENT
+    # ============================================================================
+    
+    @transaction.atomic
+    def create_email_sequence(self, sequence_config: Dict, 
+                             target_objects: List[Any]) -> Dict:
+        """
+        Create intelligent email sequence with personalization and timing
+        
+        Args:
+            sequence_config: Email sequence configuration
+            target_objects: List of target objects (leads, accounts, etc.)
+        
+        Returns:
+            Email sequence creation results
+        """
+        try:
+            self.validate_user_permission('crm.add_activity')
+            
+            email_activities = []
+            sequence_results = {
+                'total_targets': len(target_objects),
+                'emails_scheduled': 0,
+                'personalization_applied': 0,
+                'errors': []
+            }
+            
+            for target_obj in target_objects:
+                try:
+                    # Generate personalized email sequence
+                    personalized_emails = self._generate_personalized_email_sequence(
+                        sequence_config, target_obj
+                    )
+                    
+                    for email_config in personalized_emails:
+                        # Calculate optimal timing
+                        optimal_timing = self.scheduler.suggest_follow_up_timing(
+                            target_obj, 'email'
+                        )
+                        
+                        # Create email activity
+                        email_activity = self.create_intelligent_activity({
+                            'subject': email_config['subject'],
+                            'description': email_config['content'],
+                            'activity_type_id': self._get_email_activity_type_id(),
+                            'start_datetime': email_config['send_datetime'],
+                            'status': 'PLANNED',
+                            'priority': email_config.get('priority', 'MEDIUM'),
+                            
+                            # Link to target object
+                            self._get_object_field_name(target_obj): target_obj.id,
+                            
+                            # Email-specific data
+                            'email_template_id': email_config.get('template_id'),
+                            'personalization_data': email_config.get('personalization', {}),
+                            'sequence_position': email_config['sequence_position'],
+                            'optimal_timing': optimal_timing
+                        })
+                        
+                        email_activities.append(email_activity)
+                        sequence_results['emails_scheduled'] += 1
+                        
+                        if email_config.get('personalization'):
+                            sequence_results['personalization_applied'] += 1
+                
+                except Exception as e:
+                    sequence_results['errors'].append({
+                        'target_object_id': target_obj.id,
+                        'error': str(e)
+                    })
+            
+            # Create sequence tracking
+            if email_activities:
+                self._create_activity_series(email_activities, sequence_config)
+            
+            self.log_activity(
+                'email_sequence_created',
+                'ActivitySeries',
+                None,
+                {
+                    'total_targets': sequence_results['total_targets'],
+                    'emails_scheduled': sequence_results['emails_scheduled'],
+                    'success_rate': (sequence_results['emails_scheduled'] / sequence_results['total_targets'] * 100) if sequence_results['total_targets'] > 0 else 0
+                }
+            )
+            
+            return sequence_results
+            
+        except Exception as e:
+            logger.error(f"Email sequence creation failed: {e}", exc_info=True)
+            raise ActivityException(f"Email sequence creation failed: {str(e)}")
+    
+    def analyze_communication_effectiveness(self, user_id: int = None, 
+                                          period_days: int = 90) -> Dict:
+        """
+        Analyze communication effectiveness with detailed insights
+        
+        Args:
+            user_id: Specific user analysis (all users if None)
+            period_days: Analysis period
+        
+        Returns:
+            Communication effectiveness analysis
+        """
+        try:
+            # Get communication pattern analysis
+            patterns = self.communication_intelligence.analyze_communication_patterns(
+                user_id, period_days
+            )
+            
+            # Add effectiveness metrics
+            effectiveness_metrics = self._calculate_communication_effectiveness_metrics(
+                user_id, period_days
+            )
+            
+            # Generate actionable insights
+            actionable_insights = self._generate_communication_action_items(
+                patterns, effectiveness_metrics
+            )
+            
+            # Benchmarking against team/company averages
+            benchmarks = self._get_communication_benchmarks(user_id)
+            
+            return {
+                'analysis_period': f'{period_days} days',
+                'user_specific': user_id is not None,
+                'communication_patterns': patterns,
+                'effectiveness_metrics': effectiveness_metrics,
+                'actionable_insights': actionable_insights,
+                'benchmarks': benchmarks,
+                'generated_at': timezone.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Communication effectiveness analysis failed: {e}", exc_info=True)
+            raise ActivityException(f"Communication analysis failed: {str(e)}")
+    
+    # ============================================================================
+    # PRODUCTIVITY AND PERFORMANCE ANALYTICS
+    # ============================================================================
+    
+    def calculate_user_productivity_score(self, user_id: int, 
+                                        period_days: int = 30) -> Dict:
+        """
+        Calculate comprehensive user productivity score
+        
+        Args:
+            user_id: User ID
+            period_days: Analysis period
+        
+        Returns:
+            Detailed productivity analysis
+        """
+        try:
+            self.validate_user_permission('crm.view_analytics')
+            
+            # Get base productivity score
+            productivity_data = self.productivity_engine.calculate_productivity_score(
+                user_id, period_days
+            )
+            
+            # Add advanced analytics
+            activity_patterns = self._analyze_user_activity_patterns(user_id, period_days)
+            goal_achievement = self._analyze_goal_achievement(user_id, period_days)
+            collaboration_metrics = self._analyze_collaboration_metrics(user_id, period_days)
+            
+            # Generate improvement recommendations
+            improvement_plan = self._generate_productivity_improvement_plan(
+                productivity_data, activity_patterns
+            )
+            
+            # Historical trend analysis
+            historical_trends = self._analyze_productivity_trends(user_id, period_days * 3)
+            
+            return {
+                **productivity_data,
+                'activity_patterns': activity_patterns,
+                'goal_achievement': goal_achievement,
+                'collaboration_metrics': collaboration_metrics,
+                'improvement_plan': improvement_plan,
+                'historical_trends': historical_trends
+            }
+            
+        except Exception as e:
+            logger.error(f"Productivity score calculation failed: {e}", exc_info=True)
+            raise ActivityException(f"Productivity calculation failed: {str(e)}")
+    
+    def generate_activity_insights_dashboard(self, user_id: int = None, 
+                                           team_id: int = None) -> Dict:
+        """
+        Generate comprehensive activity insights dashboard
+        
+        Args:
+            user_id: Specific user (optional)
+            team_id: Specific team (optional)
+        
+        Returns:
+            Activity insights dashboard data
+        """
+        try:
+            dashboard_data = {
+                'dashboard_type': 'activity_insights',
+                'scope': 'user' if user_id else 'team' if team_id else 'company',
+                'generated_at': timezone.now().isoformat(),
+                'sections': {}
+            }
+            
+            # Key Performance Indicators
+            dashboard_data['sections']['kpis'] = self._generate_activity_kpis(user_id, team_id)
+            
+            # Activity Volume and Trends
+            dashboard_data['sections']['volume_trends'] = self._generate_volume_trends(user_id, team_id)
+            
+            # Communication Effectiveness
+            dashboard_data['sections']['communication'] = self._generate_communication_section(user_id, team_id)
+            
+            # Productivity Metrics
+            dashboard_data['sections']['productivity'] = self._generate_productivity_section(user_id, team_id)
+            
+            # Goal Progress
+            dashboard_data['sections']['goals'] = self._generate_goals_section(user_id, team_id)
+            
+            # AI-Powered Insights
+            dashboard_data['sections']['ai_insights'] = self._generate_ai_insights_section(user_id, team_id)
+            
+            # Action Items and Recommendations
+            dashboard_data['sections']['recommendations'] = self._generate_recommendations_section(user_id, team_id)
+            
+            return dashboard_data
+            
+        except Exception as e:
+            logger.error(f"Activity insights dashboard generation failed: {e}", exc_info=True)
+            raise ActivityException(f"Dashboard generation failed: {str(e)}")
+    
+    # ============================================================================
+    # HELPER METHODS
+    # ============================================================================
+    
+    def _apply_intelligent_defaults(self, activity
+        """Apply AI-powered intelligent defaults to activity data"""
+        enhanced_data = activity_data.copy()
+        
+        # Intelligent duration prediction
+        if not enhanced_data.get('end_datetime') and enhanced_data.get('start_datetime'):
+            predicted_duration = self._predict_activity_duration(
+                enhanced_data['activity_type_id'],
+                enhanced_data.get('subject', ''),
+                enhanced_data.get('description', '')
+            )
+            
+            start_time = enhanced_data['start_datetime']
+            if isinstance(start_time, str):
+                start_time = timezone.datetime.fromisoformat(start_time)
+            
+            enhanced_data['end_datetime'] = start_time + timedelta(minutes=predicted_duration)
+            enhanced_data['predicted_duration'] = predicted_duration
+        
+        # Intelligent priority assignment
+        if not enhanced_data.get('priority'):
+            enhanced_data['priority'] = self._predict_activity_priority(enhanced_data)
+        
+        # Optimal timing suggestions
+        if enhanced_data.get('start_datetime'):
+            related_object = self._get_related_object(enhanced_data)
+            if related_object:
+                timing_suggestions = self.scheduler.suggest_follow_up_timing(
+                    related_object, enhanced_data.get('activity_type', 'general')
+                )
+                enhanced_data['optimal_timing'] = timing_suggestions
+                enhanced_data['ai_confidence_score'] = timing_suggestions.get('confidence_score', 0.7)
+        
+        return enhanced_data
+    
+    def _predict_activity_duration(self, activity_type_id: int, subject: str, description: str) -> int:
+        """Predict activity duration using ML and historical data"""
+        try:
+            # Get historical data for similar activities
+            historical_activities = Activity.objects.filter(
+                tenant=self.tenant,
+                activity_type_id=activity_type_id,
+                end_datetime__isnull=False,
+                start_datetime__isnull=False
+            ).annotate(
+                duration_minutes=models.F('end_datetime') - models.F('start_datetime')
+            )
+            
+            if historical_activities.count() > 10:
+                # Use historical average with adjustments
+                avg_duration = historical_activities.aggregate(
+                    avg=Avg('duration_minutes')
+                )['avg']
+                
+                if avg_duration:
+                    base_minutes = int(avg_duration.total_seconds() / 60)
+                    
+                    # Adjust based on subject/description complexity
+                    if len(subject + description) > 200:
+                        base_minutes = int(base_minutes * 1.2)  # 20% longer for complex activities
+                    elif len(subject + description) < 50:
+                        base_minutes = int(base_minutes * 0.8)  # 20% shorter for simple activities
+                    
+                    return max(15, min(240, base_minutes))  # Between 15 minutes and 4 hours
+            
+            # Default durations by activity type
+            default_durations = {
+                'CALL': 30,
+                'EMAIL': 15,
+                'MEETING': 60,
+                'DEMO': 45,
+                'PRESENTATION': 90,
+                'FOLLOW_UP': 20,
+                'RESEARCH': 45
+            }
+            
+            activity_type = ActivityType.objects.filter(id=activity_type_id).first()
+            if activity_type and activity_type.category:
+                return default_durations.get(activity_type.category, 30)
+            
+            return 30  # Default 30 minutes
+            
+        except Exception as e:
+            logger.error(f"Duration prediction failed: {e}")
+            return 30
+    
+    def _predict_activity"""Predict activity priority based on context"""
+        priority_score = 50  # Base score
+        
+        # Related object priority
+        if activity_data.get('opportunity_id'):
+            try:
+                opportunity = Opportunity.objects.get(id=activity_data['opportunity_id'])
+                if opportunity.amount and opportunity.amount >= 50000:
+                    priority_score += 30
+                if opportunity.close_date and (opportunity.close_date - timezone.now().date()).days <= 7:
+                    priority_score += 40
+            except Opportunity.DoesNotExist:
+                pass
+        
+        elif activity_data.get('lead_id'):
+            try:
+                lead = Lead.objects.get(id=activity_data['lead_id'])
+                if hasattr(lead, 'score') and lead.score >= 80:
+                    priority_score += 25
+            except Lead.DoesNotExist:
+                pass
+        
+        # Activity type priority
+        try:
+            activity_type = ActivityType.objects.get(id=activity_data['activity_type_id'])
+            if activity_type.category in ['CALL', 'MEETING']:
+                priority_score += 20
+        except ActivityType.DoesNotExist:
+            pass
+        
+        # Subject keywords
+        subject = activity_data.get('subject', '').lower()
+        urgent_keywords = ['urgent', 'asap', 'immediate', 'critical', 'emergency']
+        if any(keyword in subject for keyword in urgent_keywords):
+            priority_score += 30
+        
+        # Convert score to priority
+        if priority_score >= 80:
+            return 'HIGH'
+        elif priority_score >= 60:
+            return 'MEDIUM'
+        else:
+            return 'LOW'
+    
+    def _create_intelligent_reminders(self, activity: Activity):
+        """Create intelligent reminders based on activity type and context"""
+        reminder_configs = []
+        
+        # Activity type based reminders
+        if activity.activity_type.category == 'MEETING':
+            reminder_configs.extend([
+                {'minutes_before': 15, 'method': 'NOTIFICATION'},
+                {'minutes_before': 60, 'method': 'EMAIL'},
+                {'hours_before': 24, 'method': 'EMAIL'}
+            ])
+        elif activity.activity_type.category == 'CALL':
+            reminder_configs.extend([
+                {'minutes_before': 5, 'method': 'NOTIFICATION'},
+                {'minutes_before': 30, 'method': 'NOTIFICATION'}
+            ])
+        else:
+            reminder_configs.append({'minutes_before': 30, 'method': 'NOTIFICATION'})
+        
+        # Priority adjustments
+        if activity.priority == 'HIGH':
+            # Add extra reminder for high priority
+            reminder_configs.append({'hours_before': 2, 'method': 'NOTIFICATION'})
+        
+        # Create reminder objects
+        for config in reminder_configs:
+            if 'minutes_before' in config:
+                reminder_time = activity.start_datetime - timedelta(minutes=config['minutes_before'])
+            else:
+                reminder_time = activity.start_datetime - timedelta(hours=config['hours_before'])
+            
+            ActivityReminder.objects.create(
+                activity=activity,
+                reminder_datetime=reminder_time,
+                method=config['method'],
+                is_sent=False,
+                tenant=self.tenant
+            )
+    
+    def _generate_follow_up_suggestions(self, activity: Activity) -> List[Dict]:
+        """Generate intelligent follow-up activity suggestions"""
+        suggestions = []
+        
+        # Get related object for context
+        related_object = None
+        if activity.lead:
+            related_object = activity.lead
+        elif activity.opportunity:
+            related_object = activity.opportunity
+        elif activity.account:
+            related_object = activity.account
+        
+        if related_object:
+            # Get timing suggestions from AI
+            timing_suggestions = self.scheduler.suggest_follow_up_timing(
+                related_object, 'follow_up'
+            )
+            
+            for timing_suggestion in timing_suggestions.get('suggestions', [])[:3]:
+                suggestions.append({
+                    'activity_type': 'follow_up',
+                    'suggested_timing': timing_suggestion['timing'],
+                    'priority': timing_suggestion['priority'],
+                    'reason': timing_suggestion['reason'],
+                    'subject': f"Follow-up: {activity.subject}",
+                    'confidence_score': timing_suggestions.get('confidence_score', 0.7)
+                })
+        
+        return suggestions
+    
+    def _get_email_activity_type_id(self) -> int:
+        """Get or create email activity type"""
+        email_type, created = ActivityType.objects.get_or_create(
+            tenant=self.tenant,
+            category='EMAIL',
+            defaults={
+                'name': 'Email',
+                'description': 'Email communication',
+                'is_active': True
+            }
+        )
+        return email_type.id
+    
+    def _get_meeting_activity_type_id(self) -> int:
+        """Get or create meeting activity type"""
+        meeting_type, created = ActivityType.objects.get_or_create(
+            tenant=self.tenant,
+            category='MEETING',
+            defaults={
+                'name': 'Meeting',
+                'description': 'Meeting or appointment',
+                'is_active': True
+            }
+        )
+        return meeting_type.id

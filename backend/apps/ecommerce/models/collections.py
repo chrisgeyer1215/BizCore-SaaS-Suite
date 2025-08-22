@@ -1,30 +1,51 @@
 # apps/ecommerce/models/collections.py
 
 """
-Collection models for organizing and categorizing products
+AI-Powered Intelligent Product Collections System
+Featuring machine learning curation, predictive analytics, and automated optimization
 """
 
 from django.db import models
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
+from django.core.cache import cache
 from django.utils.text import slugify
+from django.utils import timezone
 from django.urls import reverse
+from decimal import Decimal, ROUND_HALF_UP
+from datetime import timedelta
+from collections import Counter
+import json
+import logging
+from typing import Dict, List, Any, Optional
 
 from .base import (
     EcommerceBaseModel, 
     SEOMixin, 
     VisibilityMixin, 
     SortableMixin,
-    AuditMixin
+    AuditMixin,
+    AIOptimizedPricingMixin
 )
 
+logger = logging.getLogger(__name__)
 
-class Collection(EcommerceBaseModel, SEOMixin, VisibilityMixin, SortableMixin, AuditMixin):
-    """Enhanced product collection model with hierarchical structure"""
+
+class IntelligentCollection(EcommerceBaseModel, SEOMixin, VisibilityMixin, SortableMixin, AuditMixin, AIOptimizedPricingMixin):
+    """
+    AI-Powered Intelligent Product Collection with advanced curation,
+    predictive analytics, and automated optimization
+    """
     
     class CollectionType(models.TextChoices):
         MANUAL = 'MANUAL', 'Manual Collection'
         AUTOMATIC = 'AUTOMATIC', 'Automatic Collection'
         SMART = 'SMART', 'Smart Collection'
+        AI_CURATED = 'AI_CURATED', 'AI-Curated Collection'
+        PREDICTIVE = 'PREDICTIVE', 'Predictive Collection'
+        BEHAVIORAL = 'BEHAVIORAL', 'Behavioral Collection'
+        TRENDING = 'TRENDING', 'Trending Collection'
+        PERSONALIZED = 'PERSONALIZED', 'Personalized Collection'
         CATEGORY = 'CATEGORY', 'Category'
         BRAND = 'BRAND', 'Brand Collection'
         SEASONAL = 'SEASONAL', 'Seasonal Collection'
@@ -78,6 +99,44 @@ class Collection(EcommerceBaseModel, SEOMixin, VisibilityMixin, SortableMixin, A
         help_text="Rules for automatic collections"
     )
     
+    # AI-powered features
+    ai_curation_enabled = models.BooleanField(default=False)
+    ai_optimization_score = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="AI optimization effectiveness score (0-100)"
+    )
+    machine_learning_model = models.CharField(
+        max_length=50, blank=True,
+        help_text="ML model used for this collection"
+    )
+    
+    # Predictive analytics
+    predicted_performance = models.JSONField(default=dict, blank=True)
+    trend_analysis = models.JSONField(default=dict, blank=True)
+    customer_segments = ArrayField(
+        models.CharField(max_length=50), default=list, blank=True
+    )
+    
+    # Dynamic content optimization
+    personalization_rules = models.JSONField(default=list, blank=True)
+    a_b_testing_config = models.JSONField(default=dict, blank=True)
+    conversion_optimization = models.JSONField(default=dict, blank=True)
+    
+    # Performance tracking
+    performance_metrics = models.JSONField(default=dict, blank=True)
+    engagement_analytics = models.JSONField(default=dict, blank=True)
+    revenue_analytics = models.JSONField(default=dict, blank=True)
+    
+    # Automated optimization
+    auto_reorder_enabled = models.BooleanField(default=False)
+    auto_pricing_enabled = models.BooleanField(default=False)
+    dynamic_content_enabled = models.BooleanField(default=False)
+    
+    # AI insights
+    ai_recommendations = models.JSONField(default=list, blank=True)
+    optimization_suggestions = models.JSONField(default=list, blank=True)
+    market_insights = models.JSONField(default=dict, blank=True)
+    
     # Images and Media
     featured_image = models.ImageField(upload_to='collections/', blank=True, null=True)
     banner_image = models.ImageField(upload_to='collections/banners/', blank=True, null=True)
@@ -86,6 +145,11 @@ class Collection(EcommerceBaseModel, SEOMixin, VisibilityMixin, SortableMixin, A
     
     # Performance (Cached)
     products_count = models.PositiveIntegerField(default=0)
+    ai_curated_count = models.PositiveIntegerField(default=0)
+    trending_score = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
+    last_ai_optimization = models.DateTimeField(null=True, blank=True)
     
     class Meta:
         db_table = 'ecommerce_collections'

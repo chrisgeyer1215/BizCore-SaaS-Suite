@@ -7,7 +7,7 @@ from django.utils.text import slugify
 from decimal import Decimal
 from datetime import date
 
-from backend.apps.inventory.models.abstract.auditable import AuditableMixin
+from apps.inventory.models.abstract.auditable import AuditableMixin
 
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
 from ..abstract.base import ActivatableMixin

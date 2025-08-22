@@ -1,560 +1,842 @@
 # ============================================================================
-# backend/apps/crm/services/workflow_service.py - Workflow Automation Service
+# backend/apps/crm/services/workflow_service.py - Advanced Workflow Automation Service
 # ============================================================================
 
-from typing import Dict, List, Any, Optional
-from django.db import transaction, models
-from django.utils import timezone
-from django.template import Context, Template
-from django.core.mail import send_mail
-from datetime import datetime, timedelta
 import json
 import re
+from typing import Dict, List, Any, Optional, Tuple, Union, Callable
+from datetime import datetime, timedelta
+from decimal import Decimal
+from django.db import transaction, models
+from django.utils import timezone
+from django.core.exceptions import ValidationError
+from django.db.models import Q, F
+from django.template import Template, Context
+from django.core.mail import send_mail
+import logging
 
-from .base import BaseService, CacheableMixin, NotificationMixin, CRMServiceException
-from ..models import WorkflowRule, WorkflowExecution, Lead, Account, Opportunity, Activity
+from .base import BaseService, ServiceException
+from ..models import (
+    WorkflowRule, WorkflowExecution, WorkflowAction, WorkflowCondition,
+    WorkflowTrigger, WorkflowLog, AutomationSchedule, BusinessRule,
+    Lead, Account, Opportunity, Activity, Campaign, Ticket
+)
+
+logger = logging.getLogger(__name__)
 
 
-class WorkflowService(BaseService, CacheableMixin, NotificationMixin):
-    """Advanced workflow automation engine"""
+class WorkflowException(ServiceException):
+    """Workflow service specific errors"""
+    pass
+
+
+class ConditionEvaluator:
+    """Advanced condition evaluation engine"""
     
-    def __init__(self, tenant, user=None):
-        super().__init__(tenant, user)
-        self.execution_context = {}
+    def __init__(self):
+        self.operators = {
+            'equals': self._equals,
+            'not_equals': self._not_equals,
+            'greater_than': self._greater_than,
+            'less_than': self._less_than,
+            'greater_equal': self._greater_equal,
+            'less_equal': self._less_equal,
+            'contains': self._contains,
+            'not_contains': self._not_contains,
+            'starts_with': self._starts_with,
+            'ends_with': self._ends_with,
+            'in_list': self._in_list,
+            'not_in_list': self._not_in_list,
+            'is_empty': self._is_empty,
+            'is_not_empty': self._is_not_empty,
+            'matches_regex': self._matches_regex,
+            'date_is': self._date_is,
+            'date_before': self._date_before,
+            'date_after': self._date_after,
+            'date_range': self._date_range
+        }
     
-    @transaction.atomic
-    def execute_workflow_rule(self, workflow_rule: WorkflowRule, trigger workflow rule with comprehensive logging"""
-        execution = WorkflowExecution.objects.create(
-            tenant=self.tenant,
-            workflow_rule=workflow_rule,
-            triggered_by=self.user,
-            started_at=timezone.now(),
-            status='RUNNING',
-            execution_data=trigger_data
-        )
-        
-        try:
-            # Validate trigger conditions
-            if not self._evaluate_trigger_conditions(workflow_rule, trigger_data):
-                execution.status = 'COMPLETED'
-                execution.completed_at = timezone.now()
-                execution.save()
-                return {'status': 'skipped', 'reason': 'conditions_not_met'}
-            
-            # Execute actions
-            results = []
-            for action in workflow_rule.actions:
-                try:
-                    result = self._execute_action(action, trigger_data, workflow_rule)
-                    results.append({
-                        'action_type': action.get('type'),
-                        'status': 'success',
-                        'result': result
-                    })
-                except Exception as e:
-                    error_msg = str(e)
-                    results.append({
-                        'action_type': action.get('type'),
-                        'status': 'error',
-                        'error': error_msg
-                    })
-                    
-                    # Handle errors based on configuration
-                    if workflow_rule.on_error_action == 'STOP':
-                        raise CRMServiceException(f"Workflow stopped due to error: {error_msg}")
-                    elif workflow_rule.on_error_action == 'NOTIFY':
-                        self._notify_admin_of_error(workflow_rule, error_msg)
-            
-            # Update execution record
-            execution.status = 'COMPLETED'
-            execution.completed_at = timezone.now()
-            execution.execution_data.update({'results': results})
-            execution.save()
-            
-            # Update workflow statistics
-            workflow_rule.execution_count += 1
-            workflow_rule.success_count += 1
-            workflow_rule.last_executed = timezone.now()
-            workflow_rule.save()
-            
-            return {
-                'status': 'completed',
-                'execution_id': execution.id,
-                'results': results
-            }
-            
-        except Exception as e:
-            execution.status = 'FAILED'
-            execution.error_message = str(e)
-            execution.completed_at = timezone.now()
-            execution.save()
-            
-            workflow_rule.execution_count += 1
-            workflow_rule.failure_count += 1
-            workflow_rule.save()
-            
-            self.logger.error(f"Workflow execution failed: {workflow_rule.name} - {str(e)}")
-            raise
-    
-    def trigger_workflows(self, trigger_type: str, obj: models.Model, 
-                         changes: Dict = None) -> List[Dict]:
-        """Trigger all applicable workflows for an event"""
-        workflows = WorkflowRule.objects.filter(
-            tenant=self.tenant,
-            is_active=True,
-            trigger_type=trigger_type,
-            trigger_object=obj.__class__.__name__.lower()
-        ).order_by('execution_order')
+    def evaluate_conditions(self, conditions: List[Dict], obj: Any, 
+                          logic_operator: str = 'AND') -> bool:
+        """Evaluate multiple conditions with logic operators"""
+        if not conditions:
+            return True
         
         results = []
-        trigger_data = {
-            'object_type': obj.__class__.__name__,
-            'object_id': obj.id,
-            'object_data': self._serialize_object(obj),
-            'changes': changes or {},
-            'timestamp': timezone.now().isoformat(),
-            'user_id': self.user.id if self.user else None,
-        }
+        for condition in conditions:
+            result = self._evaluate_single_condition(condition, obj)
+            results.append(result)
         
-        for workflow in workflows:
-            try:
-                if workflow.schedule_type == 'IMMEDIATE':
-                    result = self.execute_workflow_rule(workflow, trigger_data)
-                    results.append(result)
+        if logic_operator.upper() == 'AND':
+            return all(results)
+        elif logic_operator.upper() == 'OR':
+            return any(results)
+        else:
+            # Support for complex logic like "A AND (B OR C)"
+            return self._evaluate_complex_logic(results, logic_operator)
+    
+    def _evaluate_single_condition(self, condition: Dict, obj: Any) -> bool:
+        """Evaluate a single condition"""
+        try:
+            field_path = condition['field']
+            operator = condition['operator']
+            expected_value = condition['value']
+            
+            # Get actual value from object
+            actual_value = self._get_field_value(obj, field_path)
+            
+            # Apply operator
+            if operator in self.operators:
+                return self.operators[operator](actual_value, expected_value)
+            else:
+                raise WorkflowException(f"Unknown operator: {operator}")
+                
+        except Exception as e:
+            logger.error(f"Condition evaluation failed: {e}")
+            return False
+    
+    def _get_field_value(self, obj: Any, field_path: str) -> Any:
+        """Get field value supporting dot notation (e.g., 'account.industry')"""
+        try:
+            parts = field_path.split('.')
+            value = obj
+            
+            for part in parts:
+                if hasattr(value, part):
+                    value = getattr(value, part)
+                elif isinstance(value, dict):
+                    value = value.get(part)
                 else:
-                    # Schedule for later execution
-                    self._schedule_workflow_execution(workflow, trigger_data)
-                    results.append({'status': 'scheduled', 'workflow_id': workflow.id})
-            except Exception as e:
-                self.logger.error(f"Error executing workflow {workflow.name}: {e}")
+                    return None
+            
+            # Handle callable attributes
+            if callable(value):
+                value = value()
+            
+            return value
+            
+        except Exception:
+            return None
+    
+    # Operator implementations
+    def _equals(self, actual, expected): 
+        return str(actual) == str(expected)
+    
+    def _not_equals(self, actual, expected): 
+        return str(actual) != str(expected)
+    
+    def _greater_than(self, actual, expected): 
+        try: return float(actual) > float(expected)
+        except: return False
+    
+    def _contains(self, actual, expected): 
+        return expected in str(actual) if actual else False
+    
+    def _matches_regex(self, actual, expected): 
+        return bool(re.match(expected, str(actual))) if actual else False
+
+
+class ActionExecutor:
+    """Advanced action execution engine"""
+    
+    def __init__(self, tenant, user):
+        self.tenant = tenant
+        self.user = user
+        self.actions = {
+            'send_email': self._send_email,
+            'create_activity': self._create_activity,
+            'update_field': self._update_field,
+            'assign_owner': self._assign_owner,
+            'add_tag': self._add_tag,
+            'remove_tag': self._remove_tag,
+            'create_opportunity': self._create_opportunity,
+            'send_notification': self._send_notification,
+            'webhook': self._execute_webhook,
+            'run_calculation': self._run_calculation,
+            'conditional_action': self._conditional_action,
+            'delay_action': self._delay_action,
+            'escalate': self._escalate,
+            'create_ticket': self._create_ticket
+        }
+    
+    def execute_actions(self, actions: List[Dict], obj: Any, 
+                       workflow_context: Dict = None) -> List[Dict]:
+        """Execute multiple actions with context"""
+        results = []
+        context = workflow_context or {}
+        
+        for action_config in actions:
+            try:
+                result = self._execute_single_action(action_config, obj, context)
                 results.append({
-                    'status': 'error',
-                    'workflow_id': workflow.id,
-                    'error': str(e)
+                    'action': action_config['type'],
+                    'success': True,
+                    'result': result,
+                    'executed_at': timezone.now().isoformat()
+                })
+            except Exception as e:
+                logger.error(f"Action execution failed: {e}", exc_info=True)
+                results.append({
+                    'action': action_config['type'],
+                    'success': False,
+                    'error': str(e),
+                    'executed_at': timezone.now().isoformat()
                 })
         
         return results
     
-    def createowRule:
-        """Create new workflow rule with validation"""
-        self.require_permission('can_manage_workflows')
+    def _execute_single_action(self, action_config: Dict, obj: Any, context: Dict) -> Any:
+        """Execute a single action"""
+        action_type = action_config['type']
         
-        # Validate workflow configuration
-        self._validate_workflow_config(workflow_data)
+        if action_type in self.actions:
+            return self.actions[action_type](action_config, obj, context)
+        else:
+            raise WorkflowException(f"Unknown action type: {action_type}")
+    
+    def _send_email(self, config: Dict, obj: Any, context: Dict) -> Dict:
+        """Send email action"""
+        template_content = config.get('template', '')
+        subject_template = config.get('subject', 'CRM Notification')
+        recipients = config.get('recipients', [])
         
-        workflow_data.update({
+        # Process templates with object context
+        template_context = {
+            'object': obj,
+            'user': self.user,
             'tenant': self.tenant,
-            'created_by': self.user,
-        })
+            **context
+        }
         
-        workflow = WorkflowRule.objects.create(**workflow_data)
+        # Render templates
+        subject = Template(subject_template).render(Context(template_context))
+        message = Template(template_content).render(Context(template_context))
         
-        # Test workflow if in test mode
-        if workflow_data.get('test_mode'):
-            test_result = self._test_workflow_rule(workflow)
-            return workflow, test_result
+        # Resolve recipients
+        recipient_emails = self._resolve_recipients(recipients, obj)
         
-        self.logger.info(f"Workflow rule created: {workflow.name}")
-        return workflow
-    
-    def _evaluate_trigger_conditions(self, workflow_rule: WorkflowRule, :
-        """Evaluate if trigger conditions are met"""
-        conditions = workflow_rule.trigger_conditions
-        if not conditions:
-            return True
-        
-        obj_data = trigger_data.get('object_data', {})
-        changes = trigger_data.get('changes', {})
-        
-        # Evaluate each condition
-        for condition in conditions.get('conditions', []):
-            field = condition.get('field')
-            operator = condition.get('operator')
-            value = condition.get('value')
-            
-            if not self._evaluate_condition(obj_data, field, operator, value, changes):
-                return False
-        
-        return True
-    
-    def _execute_action(self, action: Dict
-                       workflow_rule: WorkflowRule) -> Any:
-        """Execute a single workflow action"""
-        action_type = action.get('type')
-        
-        if action_type == 'SEND_EMAIL':
-            return self._execute_email_action(action, trigger_data)
-        elif action_type == 'CREATE_TASK':
-            return self._execute_task_action(action, trigger_data)
-        elif action_type == 'UPDATE_FIELD':
-            return self._execute_update_action(action, trigger_data)
-        elif action_type == 'ASSIGN_RECORD':
-            return self._execute_assign_action(action, trigger_data)
-        elif action_type == 'CREATE_RECORD':
-            return self._execute_create_action(action, trigger_data)
-        elif action_type == 'SEND_SMS':
-            return self._execute_sms_action(action, trigger_data)
-        elif action_type == 'WEBHOOK':
-            return self._execute_webhook_action(action, trigger_data)
-        elif action_type == 'SCORE_UPDATE':
-            return self._execute_scoring_action(action, trigger_data)
-        else:
-            raise CRMServiceException(f"Unknown action type: {action_type}")
-    
-    def _execute_email_action(self, action: Dict, trigger
-        """Execute email sending action"""
-        email_config = action.get('config', {})
-        
-        # Get recipients
-        recipients = self._resolve_recipients(email_config.get('recipients'), trigger_data)
-        
-        # Process email template
-        template_content = email_config.get('template')
-        if template_content:
-            context = self._build_email_context(trigger_data)
-            
-            subject_template = Template(template_content.get('subject', ''))
-            body_template = Template(template_content.get('body', ''))
-            
-            subject = subject_template.render(Context(context))
-            body = body_template.render(Context(context))
-        else:
-            subject = email_config.get('subject', 'Workflow Notification')
-            body = email_config.get('body', 'This is an automated notification.')
-        
-        # Send emails
-        sent_count = 0
-        for recipient in recipients:
-            try:
-                send_mail(
-                    subject=subject,
-                    message=body,
-                    from_email=email_config.get('from_email'),
-                    recipient_list=[recipient],
-                    html_message=body if email_config.get('is_html') else None
-                )
-                sent_count += 1
-            except Exception as e:
-                self.logger.error(f"Failed to send email to {recipient}: {e}")
+        if recipient_emails:
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=None,  # Use default
+                recipient_list=recipient_emails,
+                fail_silently=False
+            )
         
         return {
-            'sent_count': sent_count,
-            'total_recipients': len(recipients),
+            'recipients_count': len(recipient_emails),
             'subject': subject
         }
     
-    def _execute_task_action(self, Dict) -> Dict:
-        """Execute task creation action"""
-        task_config = action.get('config', {})
-        
-        # Resolve assignee
-        assignee = self._resolve_user(task_config.get('assignee'), trigger_data)
-        
-        # Create activity/task
+    def _create_activity(self, config: Dict, obj: Any, context: Dict) -> Dict:
+        """Create activity action"""
         activity_data = {
             'tenant': self.tenant,
-            'subject': self._resolve_template(task_config.get('subject'), trigger_data),
-            'description': self._resolve_template(task_config.get('description'), trigger_data),
-            'activity_type': self._get_task_activity_type(),
-            'assigned_to': assignee,
-            'start_datetime': timezone.now() + timedelta(minutes=task_config.get('delay_minutes', 0)),
-            'end_datetime': timezone.now() + timedelta(
-                minutes=task_config.get('delay_minutes', 0) + task_config.get('duration_minutes', 60)
-            ),
-            'status': 'PLANNED',
-            'priority': task_config.get('priority', 'MEDIUM'),
-            'created_by': self.user,
+            'subject': config.get('subject', 'Automated Activity'),
+            'description': config.get('description', ''),
+            'activity_type_id': config.get('activity_type_id'),
+            'status': config.get('status', 'PLANNED'),
+            'priority': config.get('priority', 'MEDIUM'),
+            'start_datetime': timezone.now() + timedelta(hours=config.get('hours_offset', 0)),
+            'created_by': self.user
         }
         
-        # Link to triggered object
-        obj_type = trigger_data.get('object_type')
-        obj_id = trigger_data.get('object_id')
-        if obj_type and obj_id:
-            from django.contrib.contenttypes.models import ContentType
-            content_type = ContentType.objects.get(model=obj_type.lower())
-            activity_data['content_type'] = content_type
-            activity_data['object_id'] = str(obj_id)
+        # Link to related object
+        if hasattr(obj, '_meta'):
+            model_name = obj._meta.model_name
+            if model_name == 'lead':
+                activity_data['lead'] = obj
+            elif model_name == 'account':
+                activity_data['account'] = obj
+            elif model_name == 'opportunity':
+                activity_data['opportunity'] = obj
         
         activity = Activity.objects.create(**activity_data)
         
-        return {
-            'activity_id': activity.id,
-            'assignee': assignee.get_full_name() if assignee else None,
-            'subject': activity.subject
-        }
+        return {'activity_id': activity.id}
     
-    def _execute_update_action(self, Dict) -> Dict:
-        """Execute field update action"""
-        update_config = action.get('config', {})
+    def _update_field(self, config: Dict, obj: Any, context: Dict) -> Dict:
+        """Update field action"""
+        field_name = config['field']
+        new_value = config['value']
         
-        # Get the object to update
-        obj_type = trigger_data.get('object_type')
-        obj_id = trigger_data.get('object_id')
+        # Process template values
+        if isinstance(new_value, str) and '{{' in new_value:
+            template_context = {'object': obj, 'user': self.user, **context}
+            new_value = Template(new_value).render(Context(template_context))
         
-        model_class = self._get_model_class(obj_type)
-        obj = model_class.objects.get(id=obj_id, tenant=self.tenant)
-        
-        updated_fields = {}
-        for field_update in update_config.get('field_updates', []):
-            field_name = field_update.get('field')
-            new_value = self._resolve_value(field_update.get('value'), trigger_data)
-            
-            if hasattr(obj, field_name):
-                old_value = getattr(obj, field_name)
-                setattr(obj, field_name, new_value)
-                updated_fields[field_name] = {'old': old_value, 'new': new_value}
-        
-        obj.updated_by = self.user
-        obj.save()
+        # Update the field
+        setattr(obj, field_name, new_value)
+        obj.save(update_fields=[field_name])
         
         return {
-            'object_id': obj.id,
-            'updated_fields': updated_fields
+            'field': field_name,
+            'old_value': getattr(obj, field_name, None),
+            'new_value': new_value
         }
+
+
+class WorkflowEngine:
+    """Core workflow orchestration engine"""
     
-    def _ Dict) -> Dict:
-        """Execute record assignment action"""
-        assign_config = action.get('config', {})
-        
-        # Get the object to assign
-        obj_type = trigger_data.get('object_type')
-        obj_id = trigger_data.get('object_id')
-        
-        model_class = self._get_model_class(obj_type)
-        obj = model_class.objects.get(id=obj_id, tenant=self.tenant)
-        
-        # Resolve assignee
-        assignee = self._resolve_user(assign_config.get('assignee'), trigger_data)
-        
-        if hasattr(obj, 'owner'):
-            old_owner = obj.owner
-            obj.owner = assignee
-            obj.updated_by = self.user
-            obj.save()
-            
-            return {
-                'object_id': obj.id,
-                'old_owner': old_owner.get_full_name() if old_owner else None,
-                'new_owner': assignee.get_full_name() if assignee else None
-            }
-        
-        raise CRMServiceException(f"Object type {obj_type} does not support assignment")
+    def __init__(self, tenant, user):
+        self.tenant = tenant
+        self.user = user
+        self.condition_evaluator = ConditionEvaluator()
+        self.action_executor = ActionExecutor(tenant, user)
     
-    def _execute_webhook_action(self, action: Dict Dict:
-        """Execute webhook call action"""
-        import requests
-        
-        webhook_config = action.get('config', {})
-        url = webhook_config.get('url')
-        method = webhook_config.get('method', 'POST')
-        headers = webhook_config.get('headers', {})
-        
-        # Prepare payload
-        payload = {
-            'tenant_id': str(self.tenant.id),
-            'trigger_data': trigger_data,
-            'timestamp': timezone.now().isoformat(),
-        }
-        
-        # Add custom data
-        if webhook_config.get('custom_data'):
-            payload.update(webhook_config['custom_data'])
-        
-        # Make request
+    def execute_workflow(self, workflow_rule: 'WorkflowRule', obj: Any, 
+                        trigger_event: str = None) -> Dict:
+        """Execute complete workflow"""
         try:
-            response = requests.request(
-                method=method,
-                url=url,
-                json=payload,
-                headers=headers,
-                timeout=30
+            execution_context = {
+                'workflow_id': workflow_rule.id,
+                'trigger_event': trigger_event,
+                'object_type': obj._meta.model_name,
+                'object_id': obj.id,
+                'started_at': timezone.now(),
+                'user_id': self.user.id if self.user else None
+            }
+            
+            # Create execution record
+            execution = WorkflowExecution.objects.create(
+                workflow_rule=workflow_rule,
+                trigger_event=trigger_event or 'manual',
+                object_type=obj._meta.model_name,
+                object_id=obj.id,
+                status='RUNNING',
+                started_at=timezone.now(),
+                tenant=self.tenant,
+                triggered_by=self.user,
+                context=execution_context
             )
-            response.raise_for_status()
             
-            return {
-                'status_code': response.status_code,
-                'response_size': len(response.content),
-                'success': True
-            }
-        except requests.RequestException as e:
-            return {
-                'error': str(e),
-                'success': False
-            }
+            try:
+                # Evaluate conditions
+                conditions_met = True
+                if workflow_rule.conditions:
+                    conditions_met = self.condition_evaluator.evaluate_conditions(
+                        workflow_rule.conditions,
+                        obj,
+                        workflow_rule.condition_logic or 'AND'
+                    )
+                
+                execution_results = {
+                    'conditions_met': conditions_met,
+                    'actions_executed': [],
+                    'execution_time': None
+                }
+                
+                if conditions_met:
+                    # Execute actions
+                    action_results = self.action_executor.execute_actions(
+                        workflow_rule.actions,
+                        obj,
+                        execution_context
+                    )
+                    execution_results['actions_executed'] = action_results
+                
+                # Complete execution
+                execution.status = 'COMPLETED'
+                execution.completed_at = timezone.now()
+                execution.results = execution_results
+                execution.save()
+                
+                execution_results['execution_time'] = (
+                    execution.completed_at - execution.started_at
+                ).total_seconds()
+                
+                return execution_results
+                
+            except Exception as e:
+                # Handle execution failure
+                execution.status = 'FAILED'
+                execution.completed_at = timezone.now()
+                execution.error_message = str(e)
+                execution.save()
+                raise
+                
+        except Exception as e:
+            logger.error(f"Workflow execution failed: {e}", exc_info=True)
+            raise WorkflowException(f"Workflow execution failed: {str(e)}")
+
+
+class WorkflowService(BaseService):
+    """Comprehensive workflow automation service"""
     
-    def _execute_scoring_action(self, action: Dict, triggerd/account scoring update"""
-        from .scoring_service import ScoringService
-        
-        scoring_config = action.get('config', {})
-        obj_type = trigger_data.get('object_type')
-        obj_id = trigger_data.get('object_id')
-        
-        scoring_service = ScoringService(self.tenant, self.user)
-        
-        if obj_type.lower() == 'lead':
-            lead = Lead.objects.get(id=obj_id, tenant=self.tenant)
-            result = scoring_service.calculate_lead_score(lead)
-            return {'lead_id': lead.id, 'new_score': result['total_score']}
-        elif obj_type.lower() == 'account':
-            account = Account.objects.get(id=obj_id, tenant=self.tenant)
-            result = scoring_service.calculate_account_score(account)
-            return {'account_id': account.id, 'new_score': result['total_score']}
-        
-        raise CRMServiceException(f"Scoring not supported for object type: {obj_type}")
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.workflow_engine = WorkflowEngine(self.tenant, self.user)
     
-    def _resolve_recipients(self, recipients_config: List,str]:
-        """Resolve email recipients from configuration"""
-        recipients = []
+    # ============================================================================
+    # WORKFLOW RULE MANAGEMENT
+    # ============================================================================
+    
+    @transaction.atomic
+    def create_workflow_rule(self, rule_
+        Create advanced workflow rule with conditions and actions
         
-        for recipient_config in recipients_config:
-            if recipient_config.get('type') == 'field':
-                # Get email from object field
-                field_value = self._get_field_value(trigger_data, recipient_config.get('field'))
-                if field_value and '@' in str(field_value):
-                    recipients.append(str(field_value))
-            elif recipient_config.get('type') == 'user':
-                # Get specific user email
-                from django.contrib.auth import get_user_model
-                User = get_user_model()
+        Args: Workflow rule configuration
+        
+        Returns:
+            WorkflowRule instance
+        """
+        self.context.operation = 'create_workflow_rule'
+        
+        try:
+            self.validate_user_permission('crm.add_workflowrule')
+            
+            # Validate required fields
+            required_fields = ['name', 'trigger_event', 'actions']
+            is_valid, errors = self.validate_data(rule_data, {
+                field: {'required': True} for field in required_fields
+            })
+            
+            if not is_valid:
+                raise WorkflowException(f"Validation failed: {', '.join(errors)}")
+            
+            # Validate actions format
+            self._validate_workflow_actions(rule_data['actions'])
+            
+            # Create workflow rule
+            workflow_rule = WorkflowRule.objects.create(
+                tenant=self.tenant,
+                name=rule_data['name'],
+                description=rule_data.get('description', ''),
+                trigger_event=rule_data['trigger_event'],
+                object_type=rule_data.get('object_type', 'lead'),
+                conditions=rule_data.get('conditions', []),
+                condition_logic=rule_data.get('condition_logic', 'AND'),
+                actions=rule_data['actions'],
+                is_active=rule_data.get('is_active', True),
+                priority=rule_data.get('priority', 50),
+                execution_limit=rule_data.get('execution_limit'),
+                schedule_config=rule_data.get('schedule_config', {}),
+                created_by=self.user,
+                metadata={
+                    'creation_source': 'manual',
+                    'complexity_score': self._calculate_rule_complexity(rule_data),
+                    'estimated_executions_per_day': rule_data.get('estimated_executions', 0)
+                }
+            )
+            
+            # Create individual condition and action records for better tracking
+            self._create_workflow_components(workflow_rule, rule_data)
+            
+            # Validate workflow logic
+            validation_results = self._validate_workflow_logic(workflow_rule)
+            if not validation_results['is_valid']:
+                workflow_rule.is_active = False
+                workflow_rule.save()
+                logger.warning(f"Workflow rule created but deactivated due to validation issues: {validation_results}")
+            
+            self.log_activity(
+                'workflow_rule_created',
+                'WorkflowRule',
+                workflow_rule.id,
+                {
+                    'name': workflow_rule.name,
+                    'trigger_event': workflow_rule.trigger_event,
+                    'conditions_count': len(rule_data.get('conditions', [])),
+                    'actions_count': len(rule_data['actions']),
+                    'is_active': workflow_rule.is_active
+                }
+            )
+            
+            return workflow_rule
+            
+        except Exception as e:
+            logger.error(f"Workflow rule creation failed: {e}", exc_info=True)
+            raise WorkflowException(f"Workflow rule creation failed: {str(e)}")
+    
+    def trigger_workflow_by_event(self, event_type: str, obj: Any, 
+                                 event List[Dict]:
+        """
+        Trigger workflows based on system events
+        
+        Args:
+            event_type: Type of event that occurred
+            obj: Object that triggered the event
+            event_data: Additional event data
+        
+        Returns:
+            List of workflow execution results
+        """
+        try:
+            # Find matching workflow rules
+            matching_workflows = WorkflowRule.objects.filter(
+                tenant=self.tenant,
+                is_active=True,
+                trigger_event=event_type,
+                object_type=obj._meta.model_name
+            ).order_by('priority')
+            
+            execution_results = []
+            
+            for workflow_rule in matching_workflows:
                 try:
-                    user = User.objects.get(id=recipient_config.get('user_id'))
-                    recipients.append(user.email)
-                except User.DoesNotExist:
-                    pass
-            elif recipient_config.get('type') == 'role':
-                # Get users with specific role
-                self._get_role_emails(recipient_config.get('role'), recipients)
-        
-        return recipients
-    
-    def _resolve_template) -> str:
-        """Resolve template string with trigger data"""
-        if not template_str:
-            return ''
-        
-        context = self._build_email_context(trigger_data)
-        template = Template(template_str)
-        return template.render(Context(context))
-    
-    def _buil
-        """Build context for email templates"""
-        context = {
-            'tenant': self.tenant.name,
-            'user': self.user.get_full_name() if self.user else 'System',
-            'timestamp': timezone.now(),
-            'object_data': trigger_data.get('object_data', {}),
-            'changes': trigger_data.get('changes', {}),
-        }
-        
-        # Add object-specific context
-        obj_type = trigger_data.get('object_type', '').lower()
-        if obj_type == 'lead':
-            context['lead'] = trigger_data.get('object_data', {})
-        elif obj_type == 'account':
-            context['account'] = trigger_data.get('object_data', {})
-        elif obj_type == 'opportunity':
-            context['opportunity'] = trigger_data.get('object_data', {})
-        
-        return context
-    
-    def _serialize_object(self, obj: models.Model) -> Dict:
-        """Serialize model object for workflow context"""
-        data = {}
-        
-        for field in obj._meta.fields:
-            field_name = field.name
-            field_value = getattr(obj, field_name)
+                    # Check execution limits
+                    if not self._check_execution_limits(workflow_rule, obj):
+                        continue
+                    
+                    # Execute workflow
+                    result = self.workflow_engine.execute_workflow(
+                        workflow_rule, obj, event_type
+                    )
+                    
+                    execution_results.append({
+                        'workflow_id': workflow_rule.id,
+                        'workflow_name': workflow_rule.name,
+                        'execution_result': result
+                    })
+                    
+                except Exception as e:
+                    logger.error(f"Individual workflow execution failed: {e}")
+                    execution_results.append({
+                        'workflow_id': workflow_rule.id,
+                        'workflow_name': workflow_rule.name,
+                        'error': str(e)
+                    })
             
-            # Handle different field types
-            if hasattr(field_value, 'isoformat'):  # DateTime fields
-                data[field_name] = field_value.isoformat()
-            elif isinstance(field_value, models.Model):  # Foreign keys
-                data[field_name] = str(field_value)
-                data[f'{field_name}_id'] = field_value.id
-            else:
-                data[field_name] = str(field_value) if field_value is not None else None
-        
-        return data
-    
-    def _validate_workflow_config(self, workflow
-        required_fields = ['name', 'trigger_type', 'trigger_object', 'actions']
-        for field in required_fields:
-            if not workflow_data.get(field):
-                raise CRMServiceException(f"Missing required field: {field}")
-        
-        # Validate actions
-        for action in workflow_data.get('actions', []):
-            if not action.get('type'):
-                raise CRMServiceException("Action must have a type")
+            # Log event processing
+            self.log_activity(
+                'workflows_triggered_by_event',
+                obj._meta.model_name,
+                obj.id,
+                {
+                    'event_type': event_type,
+                    'workflows_triggered': len(execution_results),
+                    'successful_executions': sum(1 for r in execution_results if 'error' not in r)
+                }
+            )
             
-            # Validate specific action configurations
-            self._validate_action_config(action)
+            return execution_results
+            
+        except Exception as e:
+            logger.error(f"Event-based workflow triggering failed: {e}", exc_info=True)
+            raise WorkflowException(f"Event-based workflow triggering failed: {str(e)}")
     
-    def _validate_action_config(self, action: Dict):
-        """Validate individual action configuration"""
-        action_type = action.get('type')
-        config = action.get('config', {})
-        
-        if action_type == 'SEND_EMAIL':
-            if not config.get('recipients'):
-                raise CRMServiceException("Email action must have recipients")
-        elif action_type == 'CREATE_TASK':
-            if not config.get('subject'):
-                raise CRMServiceException("Task action must have a subject")
-        elif action_type == 'WEBHOOK':
-            if not config.get('url'):
-                raise CRMServiceException("Webhook action must have a URL")
+    # ============================================================================
+    # ADVANCED WORKFLOW FEATURES
+    # ============================================================================
     
-    def get_workflow_analytics(self, workflow_id: int = None) -> Dict:
-        """Get workflow execution analytics"""
-        queryset = WorkflowExecution.objects.filter(tenant=self.tenant)
+    def create_conditional_workflow(self, baseconditional_branches: List[Dict]) -> WorkflowRule:
+        """
+        Create complex conditional workflow with multiple branches
         
-        if workflow_id:
-            queryset = queryset.filter(workflow_rule_id=workflow_id)
+        Args: Base workflow configuration
+            conditional_branches: List of conditional branch configurations
         
-        # Execution summary
-        total_executions = queryset.count()
-        successful = queryset.filter(status='COMPLETED').count()
-        failed = queryset.filter(status='FAILED').count()
+        Returns:
+            Complex WorkflowRule instance
+        """
+        try:
+            self.validate_user_permission('crm.add_workflowrule')
+            
+            # Create master workflow with conditional actions
+            conditional_actions = []
+            
+            for branch in conditional_branches:
+                conditional_action = {
+                    'type': 'conditional_action',
+                    'conditions': branch['conditions'],
+                    'condition_logic': branch.get('condition_logic', 'AND'),
+                    'actions': branch['actions'],
+                    'branch_name': branch.get('name', f"Branch {len(conditional_actions) + 1}")
+                }
+                conditional_actions.append(conditional_action)
+            
+            # Add default action if provided
+            if 
+                conditional_actions.append({
+                    'type': 'default_action',
+                    'actions': base_rule_data['default_actions']
+                })
+            
+            # Update base rule data
+            base_rule_data['actions'] = conditional_actions
+            base_rule_data['name'] = f"Conditional: {base_rule_data.get('name', 'Unnamed')}"
+            
+            workflow_rule = self.create_workflow_rule(base_rule_data)
+            
+            return workflow_rule
+            
+        except Exception as e:
+            logger.error(f"Conditional workflow creation failed: {e}", exc_info=True)
+            raise WorkflowException(f"Conditional workflow creation failed: {str(e)}")
+    
+    def create_scheduled_workflow(self, rule_data: Dict, 
+                                 schedule_config: Dict) -> WorkflowRule:
+        """
+        Create scheduled workflow that runs at specific times
         
-        success_rate = (successful / total_executions * 100) if total_executions > 0 else 0
+        Args: configuration
         
-        # Performance metrics
-        avg_execution_time = queryset.filter(
-            started_at__isnull=False,
-            completed_at__isnull=False
-        ).extra(
-            select={'duration': 'EXTRACT(EPOCH FROM (completed_at - started_at))'}
-        ).aggregate(avg_duration=models.Avg('duration'))['avg_duration'] or 0
+        Returns:
+            Scheduled WorkflowRule instance
+        """
+        try:
+            # Validate schedule configuration
+            self._validate_schedule_config(schedule_config)
+            
+            # Set trigger event for scheduled workflows
+            rule_data['trigger_event'] = 'scheduled'
+            rule_data['schedule_config'] = schedule_config
+            
+            workflow_rule = self.create_workflow_rule(rule_data)
+            
+            # Create automation schedule
+            AutomationSchedule.objects.create(
+                workflow_rule=workflow_rule,
+                schedule_type=schedule_config['type'],
+                schedule_expression=schedule_config.get('expression', ''),
+                timezone=schedule_config.get('timezone', 'UTC'),
+                is_active=True,
+                tenant=self.tenant,
+                next_execution=self._calculate_next_execution(schedule_config)
+            )
+            
+            return workflow_rule
+            
+        except Exception as e:
+            logger.error(f"Scheduled workflow creation failed: {e}", exc_info=True)
+            raise WorkflowException(f"Scheduled workflow creation failed: {str(e)}")
+    
+    def execute_bulk_workflow(self, workflow_id: int, object_ids: List[int], 
+                             batch_size: int = 50) -> Dict:
+        """
+        Execute workflow on multiple objects in batches
         
-        # Most active workflows
-        workflow_stats = WorkflowRule.objects.filter(
-            tenant=self.tenant
-        ).values(
-            'id', 'name'
-        ).annotate(
-            executions=models.Count('executions'),
-            success_count=models.Sum('success_count'),
-            failure_count=models.Sum('failure_count')
-        ).order_by('-executions')[:10]
+        Args:
+            workflow_id: Workflow rule ID
+            object_ids: List of object IDs to process
+            batch_size: Batch processing size
         
-        # Execution trends
-        daily_stats = queryset.extra(
-            select={'date': 'DATE(started_at)'}
-        ).values('date').annotate(
-            count=models.Count('id'),
-            success=models.Count('id', filter=models.Q(status='COMPLETED')),
-            failed=models.Count('id', filter=models.Q(status='FAILED'))
-        ).order_by('date')
+        Returns:
+            Bulk execution results
+        """
+        try:
+            workflow_rule = WorkflowRule.objects.get(id=workflow_id, tenant=self.tenant)
+            self.validate_user_permission('crm.change_workflowrule', workflow_rule)
+            
+            # Get model class
+            model_class = self._get_model_class(workflow_rule.object_type)
+            
+            results = {
+                'total_objects': len(object_ids),
+                'processed': 0,
+                'successful': 0,
+                'failed': 0,
+                'batch_results': []
+            }
+            
+            # Process in batches
+            for i in range(0, len(object_ids), batch_size):
+                batch_ids = object_ids[i:i + batch_size]
+                batch_objects = model_class.objects.filter(
+                    id__in=batch_ids,
+                    tenant=self.tenant
+                )
+                
+                batch_result = {
+                    'batch_number': (i // batch_size) + 1,
+                    'batch_size': len(batch_objects),
+                    'successful': 0,
+                    'failed': 0,
+                    'errors': []
+                }
+                
+                for obj in batch_objects:
+                    try:
+                        self.workflow_engine.execute_workflow(
+                            workflow_rule, obj, 'bulk_execution'
+                        )
+                        batch_result['successful'] += 1
+                        results['successful'] += 1
+                    except Exception as e:
+                        batch_result['failed'] += 1
+                        batch_result['errors'].append({
+                            'object_id': obj.id,
+                            'error': str(e)
+                        })
+                        results['failed'] += 1
+                    
+                    results['processed'] += 1
+                
+                results['batch_results'].append(batch_result)
+            
+            self.log_activity(
+                'bulk_workflow_executed',
+                'WorkflowRule',
+                workflow_rule.id,
+                {
+                    'total_objects': results['total_objects'],
+                    'successful': results['successful'],
+                    'failed': results['failed']
+                }
+            )
+            
+            return results
+            
+        except WorkflowRule.DoesNotExist:
+            raise WorkflowException("Workflow rule not found")
+        except Exception as e:
+            logger.error(f"Bulk workflow execution failed: {e}", exc_info=True)
+            raise WorkflowException(f"Bulk workflow execution failed: {str(e)}")
+    
+    # ============================================================================
+    # WORKFLOW ANALYTICS AND MONITORING
+    # ============================================================================
+    
+    def get_workflow_performance_analytics(self, workflow_id: int = None, 
+                                         period: str = '30d') -> Dict:
+        """
+        Get comprehensive workflow performance analytics
         
-        return {
-            'summary': {
+        Args:
+            workflow_id: Specific workflow (all workflows if None)
+            period: Analysis period
+        
+        Returns:
+            Workflow performance data
+        """
+        try:
+            # Calculate date range
+            period_days = {'7d': 7, '30d': 30, '90d': 90, '1y': 365}
+            days = period_days.get(period, 30)
+            start_date = timezone.now() - timedelta(days=days)
+            
+            # Build query
+            executions_query = WorkflowExecution.objects.filter(
+                tenant=self.tenant,
+                started_at__gte=start_date
+            )
+            
+            if workflow_id:
+                executions_query = executions_query.filter(workflow_rule_id=workflow_id)
+            
+            # Calculate metrics
+            total_executions = executions_query.count()
+            successful_executions = executions_query.filter(status='COMPLETED').count()
+            failed_executions = executions_query.filter(status='FAILED').count()
+            
+            # Performance metrics
+            avg_execution_time = executions_query.filter(
+                status='COMPLETED',
+                completed_at__isnull=False
+            ).aggregate(
+                avg_time=models.Avg(
+                    models.F('completed_at') - models.F('started_at')
+                )
+            )['avg_time']
+            
+            # Top performing workflows
+            top_workflows = executions_query.values(
+                'workflow_rule__name'
+            ).annotate(
+                execution_count=Count('id'),
+                success_rate=Count('id', filter=Q(status='COMPLETED')) * 100.0 / Count('id')
+            ).order_by('-execution_count')[:10]
+            
+            # Daily execution trends
+            daily_trends = []
+            for i in range(days):
+                date = start_date + timedelta(days=i)
+                day_executions = executions_query.filter(
+                    started_at__date=date.date()
+                ).count()
+                daily_trends.append({
+                    'date': date.date().isoformat(),
+                    'executions': day_executions
+                })
+            
+            analytics_data = {
+                'period': period,
                 'total_executions': total_executions,
-                'successful': successful,
-                'failed': failed,
-                'success_rate': round(success_rate, 2),
-                'avg_execution_time': round(avg_execution_time, 2),
-            },
-            'top_workflows': list(workflow_stats),
-            'daily_trends': list(daily_stats),
+                'successful_executions': successful_executions,
+                'failed_executions': failed_executions,
+                'success_rate': (successful_executions / total_executions * 100) if total_executions > 0 else 0,
+                'average_execution_time': avg_execution_time.total_seconds() if avg_execution_time else 0,
+                'top_workflows': list(top_workflows),
+                'daily_trends': daily_trends,
+                'generated_at': timezone.now().isoformat()
+            }
+            
+            return analytics_data
+            
+        except Exception as e:
+            logger.error(f"Workflow analytics generation failed: {e}", exc_info=True)
+            raise WorkflowException(f"Workflow analytics generation failed: {str(e)}")
+    
+    # ============================================================================
+    # HELPER METHODS
+    # ============================================================================
+    
+    def _validate_workflow_actions(self, actions: List[Dict]):
+        """Validate workflow actions format and content"""
+        required_action_fields = ['type']
+        
+        for action in actions:
+            for field in required_action_fields:
+                if field not in action:
+                    raise WorkflowException(f"Action missing required field: {field}")
+            
+            # Validate specific action types
+            action_type = action['type']
+            if action_type == 'send_email':
+                if 'recipients' not in action or 'template' not in action:
+                    raise WorkflowException("Email action requires 'recipients' and 'template'")
+            
+            elif action_type == 'update_field':
+                if 'field' not in action or 'value' not in action:
+                    raise WorkflowException("Update field action requires 'field' and 'value'")
+    
+    def _calculate_rule_complexity(self, rule
+        """Calculate complexity score for workflow rule"""
+        complexity = 0
+        
+        # Base complexity
+        complexity += 1
+        
+        # Conditions complexity
+        conditions = rule_data.get('conditions', [])
+        complexity += len(conditions)
+        
+        # Actions complexity
+        actions = rule_data.get('actions', [])
+        complexity += len(actions) * 2  # Actions are more complex
+        
+        # Conditional logic complexity
+        if rule_data.get('condition_logic', 'AND') not in ['AND', 'OR']:
+            complexity += 3  # Complex logic
+        
+        return complexity
+    
+    def _get_model_class(self, object_type: str):
+        """Get model class by object type string"""
+        model_mapping = {
+            'lead': Lead,
+            'account': Account,
+            'opportunity': Opportunity,
+            'activity': Activity,
+            'campaign': Campaign,
+            'ticket': Ticket
         }
+        
+        return model_mapping.get(object_type)
+    
+    def _check_execution_limits(self, workflow_rule: WorkflowRule, obj: Any) -> bool:
+        """Check if workflow execution limits are exceeded"""
+        if not workflow_rule.execution_limit:
+            return True
+        
+        # Check executions in last 24 hours
+        recent_executions = WorkflowExecution.objects.filter(
+            workflow_rule=workflow_rule,
+            object_type=obj._meta.model_name,
+            object_id=obj.id,
+            started_at__gte=timezone.now() - timedelta(hours=24)
+        ).count()
+        
+        return recent_executions < workflow_rule.execution_limit

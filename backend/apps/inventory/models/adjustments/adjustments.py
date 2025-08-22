@@ -551,3 +551,342 @@ class StockAdjustmentItem(TenantBaseModel):
             abs(self.value_impact) > 500 or  # Significant value threshold
             abs(self.adjustment_percentage) > 10  # Significant percentage threshold
         )
+
+
+class StockWriteOff(TenantBaseModel, AuditableMixin):
+    """
+    Dedicated stock write-off tracking for damaged, expired, or obsolete inventory
+    """
+    
+    WRITEOFF_STATUS = [
+        ('DRAFT', 'Draft'),
+        ('PENDING_APPROVAL', 'Pending Approval'),
+        ('APPROVED', 'Approved'),
+        ('PROCESSED', 'Processed'),
+        ('CANCELLED', 'Cancelled'),
+        ('REJECTED', 'Rejected'),
+    ]
+    
+    WRITEOFF_REASONS = [
+        ('DAMAGE', 'Physical Damage'),
+        ('EXPIRY', 'Product Expiry'),
+        ('OBSOLETE', 'Obsolete Stock'),
+        ('THEFT', 'Theft/Loss'),
+        ('QUALITY_FAILURE', 'Quality Failure'),
+        ('CONTAMINATION', 'Contamination'),
+        ('SPOILAGE', 'Spoilage'),
+        ('BREAKAGE', 'Breakage'),
+        ('CUSTOMER_RETURN_DAMAGED', 'Customer Return - Damaged'),
+        ('SHIPPING_DAMAGE', 'Shipping Damage'),
+        ('MANUFACTURING_DEFECT', 'Manufacturing Defect'),
+        ('REGULATORY_COMPLIANCE', 'Regulatory Compliance'),
+        ('SAMPLE_USAGE', 'Sample/Demo Usage'),
+        ('SHRINKAGE', 'Inventory Shrinkage'),
+        ('OTHER', 'Other'),
+    ]
+    
+    DISPOSAL_METHODS = [
+        ('TRASH', 'Dispose in Trash'),
+        ('RECYCLE', 'Recycle'),
+        ('RETURN_VENDOR', 'Return to Vendor'),
+        ('DONATE', 'Donate'),
+        ('SELL_DISCOUNT', 'Sell at Discount'),
+        ('HAZARDOUS_DISPOSAL', 'Hazardous Material Disposal'),
+        ('INCINERATION', 'Incineration'),
+        ('COMPOST', 'Compost'),
+        ('SALVAGE', 'Salvage Parts'),
+        ('PENDING', 'Disposal Pending'),
+        ('OTHER', 'Other'),
+    ]
+    
+    # Basic Information
+    writeoff_number = models.CharField(max_length=50, blank=True)
+    status = models.CharField(max_length=20, choices=WRITEOFF_STATUS, default='DRAFT')
+    
+    # Stock Item Information
+    stock_item = models.ForeignKey(
+        'stock.StockItem',
+        on_delete=models.CASCADE,
+        related_name='writeoffs'
+    )
+    batch = models.ForeignKey(
+        'stock.Batch',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='writeoffs'
+    )
+    serial_numbers = models.JSONField(default=list, blank=True)
+    
+    # Quantities and Values
+    quantity_written_off = models.DecimalField(max_digits=12, decimal_places=3)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    total_value = models.DecimalField(max_digits=15, decimal_places=2)
+    
+    # Write-off Details
+    reason = models.CharField(max_length=30, choices=WRITEOFF_REASONS)
+    detailed_reason = models.TextField()
+    root_cause_analysis = models.TextField(blank=True)
+    
+    # Financial Impact
+    insurance_claim_eligible = models.BooleanField(default=False)
+    insurance_claim_amount = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    insurance_claim_number = models.CharField(max_length=100, blank=True)
+    tax_deductible = models.BooleanField(default=True)
+    
+    # Disposal Information
+    disposal_method = models.CharField(max_length=20, choices=DISPOSAL_METHODS, default='PENDING')
+    disposal_date = models.DateField(null=True, blank=True)
+    disposal_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    disposal_notes = models.TextField(blank=True)
+    disposal_receipt_url = models.URLField(blank=True)
+    
+    # Discovery Information
+    discovered_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='discovered_writeoffs'
+    )
+    discovered_date = models.DateTimeField(default=timezone.now)
+    location_discovered = models.ForeignKey(
+        'warehouse.StockLocation',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='writeoff_discoveries'
+    )
+    
+    # Approval Workflow
+    requires_approval = models.BooleanField(default=True)
+    approval_threshold = models.DecimalField(max_digits=10, decimal_places=2, default=100)
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='approved_writeoffs'
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approval_notes = models.TextField(blank=True)
+    
+    # Processing Information
+    processed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='processed_writeoffs'
+    )
+    processed_at = models.DateTimeField(null=True, blank=True)
+    
+    # Documentation
+    photos = models.JSONField(default=list, blank=True)
+    inspection_report_url = models.URLField(blank=True)
+    regulatory_report_number = models.CharField(max_length=100, blank=True)
+    
+    # Prevention & Learning
+    preventable = models.BooleanField(default=True)
+    prevention_measures = models.TextField(blank=True)
+    lessons_learned = models.TextField(blank=True)
+    
+    # Supplier & Vendor Information
+    supplier_notification_required = models.BooleanField(default=False)
+    supplier_notified_at = models.DateTimeField(null=True, blank=True)
+    vendor_credit_requested = models.BooleanField(default=False)
+    vendor_credit_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    
+    # Related References
+    related_po_number = models.CharField(max_length=50, blank=True)
+    related_sale_order = models.CharField(max_length=50, blank=True)
+    related_customer_complaint = models.CharField(max_length=50, blank=True)
+    
+    objects = InventoryManager()
+    
+    class Meta:
+        db_table = 'inventory_stock_writeoffs'
+        ordering = ['-discovered_date', '-id']
+        indexes = [
+            models.Index(fields=['tenant_id', 'status', 'discovered_date']),
+            models.Index(fields=['tenant_id', 'reason', 'discovered_date']),
+            models.Index(fields=['tenant_id', 'discovered_by', 'discovered_date']),
+            models.Index(fields=['tenant_id', 'stock_item']),
+            models.Index(fields=['tenant_id', 'requires_approval', 'status']),
+        ]
+    
+    def __str__(self):
+        return f"Write-off {self.writeoff_number}: {self.stock_item.product.name} - {self.quantity_written_off} units"
+    
+    def clean(self):
+        if not self.writeoff_number:
+            self.writeoff_number = self.generate_writeoff_number()
+        
+        # Calculate total value
+        self.total_value = self.quantity_written_off * self.unit_cost
+    
+    def generate_writeoff_number(self):
+        """Generate unique write-off number"""
+        from datetime import datetime
+        
+        today = datetime.now().strftime('%Y%m%d')
+        last_writeoff = StockWriteOff.objects.filter(
+            tenant_id=self.tenant_id,
+            writeoff_number__startswith=f'WO-{today}'
+        ).order_by('-writeoff_number').first()
+        
+        if last_writeoff:
+            try:
+                last_seq = int(last_writeoff.writeoff_number.split('-')[-1])
+                next_seq = last_seq + 1
+            except (ValueError, IndexError):
+                next_seq = 1
+        else:
+            next_seq = 1
+        
+        return f"WO-{today}-{next_seq:04d}"
+    
+    @property
+    def is_high_value(self):
+        """Check if this is a high-value write-off"""
+        return self.total_value > 1000
+    
+    @property
+    def requires_management_approval(self):
+        """Check if management approval is required"""
+        return self.total_value > self.approval_threshold
+    
+    @property
+    def is_overdue_for_disposal(self):
+        """Check if disposal is overdue"""
+        if self.status == 'PROCESSED' and not self.disposal_date:
+            days_since_processed = (timezone.now().date() - self.processed_at.date()).days
+            return days_since_processed > 30
+        return False
+    
+    def submit_for_approval(self, user):
+        """Submit write-off for approval"""
+        if self.status != 'DRAFT':
+            return False, f"Cannot submit - status is {self.status}"
+        
+        if not self.requires_management_approval:
+            # Auto-approve for low-value items
+            return self.approve(user, "Auto-approved - below threshold")
+        
+        self.status = 'PENDING_APPROVAL'
+        self.save(update_fields=['status'])
+        
+        return True, "Submitted for approval"
+    
+    def approve(self, user, notes=''):
+        """Approve the write-off"""
+        if self.status not in ['DRAFT', 'PENDING_APPROVAL']:
+            return False, f"Cannot approve - status is {self.status}"
+        
+        self.status = 'APPROVED'
+        self.approved_by = user
+        self.approved_at = timezone.now()
+        self.approval_notes = notes
+        
+        self.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_notes'])
+        
+        return True, "Write-off approved"
+    
+    def reject(self, user, reason):
+        """Reject the write-off"""
+        if self.status != 'PENDING_APPROVAL':
+            return False, f"Cannot reject - status is {self.status}"
+        
+        self.status = 'REJECTED'
+        self.approval_notes = f"Rejected by {user.get_full_name()}: {reason}"
+        
+        self.save(update_fields=['status', 'approval_notes'])
+        
+        return True, "Write-off rejected"
+    
+    def process_writeoff(self, user):
+        """Process the approved write-off"""
+        if self.status != 'APPROVED':
+            return False, f"Cannot process - status is {self.status}"
+        
+        # Reduce stock quantity
+        if self.stock_item.quantity_on_hand < self.quantity_written_off:
+            return False, f"Insufficient stock. Available: {self.stock_item.quantity_on_hand}"
+        
+        # Create stock movement
+        from ..stock.movements import StockMovement
+        
+        movement = StockMovement.objects.create(
+            tenant_id=self.tenant_id,
+            stock_item=self.stock_item,
+            batch=self.batch,
+            movement_type='ADJUST_OUT',
+            movement_reason='WRITE_OFF',
+            quantity=self.quantity_written_off,
+            unit_cost=self.unit_cost,
+            from_location=self.location_discovered,
+            performed_by=user,
+            reason=f"Write-off: {self.detailed_reason}",
+            reference_type='WRITEOFF',
+            reference_id=str(self.id),
+            reference_number=self.writeoff_number
+        )
+        
+        # Update write-off status
+        self.status = 'PROCESSED'
+        self.processed_by = user
+        self.processed_at = timezone.now()
+        
+        self.save(update_fields=['status', 'processed_by', 'processed_at'])
+        
+        return True, f"Write-off processed - Stock movement {movement.movement_number} created"
+    
+    def record_disposal(self, disposal_method, disposal_date, cost=0, notes=''):
+        """Record disposal of written-off items"""
+        if self.status != 'PROCESSED':
+            return False, f"Cannot record disposal - status is {self.status}"
+        
+        self.disposal_method = disposal_method
+        self.disposal_date = disposal_date
+        self.disposal_cost = cost
+        self.disposal_notes = notes
+        
+        self.save(update_fields=['disposal_method', 'disposal_date', 'disposal_cost', 'disposal_notes'])
+        
+        return True, "Disposal recorded"
+    
+    def calculate_financial_impact(self):
+        """Calculate net financial impact including recoveries"""
+        gross_loss = self.total_value
+        recoveries = (
+            self.insurance_claim_amount + 
+            self.vendor_credit_amount
+        )
+        disposal_costs = self.disposal_cost
+        
+        net_loss = gross_loss - recoveries + disposal_costs
+        
+        return {
+            'gross_loss': gross_loss,
+            'insurance_recovery': self.insurance_claim_amount,
+            'vendor_credit': self.vendor_credit_amount,
+            'disposal_cost': disposal_costs,
+            'net_loss': net_loss
+        }
+    
+    @classmethod
+    def get_trend_analysis(cls, tenant_id, days=90):
+        """Analyze write-off trends"""
+        from django.db.models import Sum, Count, Avg
+        
+        end_date = timezone.now().date()
+        start_date = end_date - timezone.timedelta(days=days)
+        
+        writeoffs = cls.objects.filter(
+            tenant_id=tenant_id,
+            discovered_date__range=[start_date, end_date]
+        )
+        
+        trend_data = writeoffs.values('reason').annotate(
+            count=Count('id'),
+            total_value=Sum('total_value'),
+            avg_value=Avg('total_value'),
+            total_quantity=Sum('quantity_written_off')
+        ).order_by('-total_value')
+        
+        return trend_data

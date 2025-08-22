@@ -768,3 +768,268 @@ class PurchaseOrderItem(TenantBaseModel):
         self.save(update_fields=['quantity_returned', 'quantity_received', 'status', 'notes'])
         
         return True, f"Returned {quantity} units successfully"
+
+
+class PurchaseOrderApproval(TenantBaseModel, AuditableMixin):
+    """
+    Purchase order approval workflow tracking
+    """
+    
+    APPROVAL_STATUS = [
+        ('PENDING', 'Pending Review'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+        ('ESCALATED', 'Escalated'),
+        ('EXPIRED', 'Expired'),
+    ]
+    
+    APPROVAL_LEVELS = [
+        ('L1', 'Level 1 - Supervisor'),
+        ('L2', 'Level 2 - Manager'),
+        ('L3', 'Level 3 - Director'),
+        ('L4', 'Level 4 - VP/C-Level'),
+        ('FINANCE', 'Finance Review'),
+        ('LEGAL', 'Legal Review'),
+        ('COMPLIANCE', 'Compliance Review'),
+    ]
+    
+    purchase_order = models.ForeignKey(
+        PurchaseOrder,
+        on_delete=models.CASCADE,
+        related_name='approvals'
+    )
+    approval_level = models.CharField(max_length=20, choices=APPROVAL_LEVELS)
+    sequence = models.PositiveIntegerField(default=1)
+    
+    # Approver Information
+    approver = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='purchase_order_approvals'
+    )
+    delegate = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='delegated_approvals'
+    )
+    
+    # Approval Details
+    status = models.CharField(max_length=20, choices=APPROVAL_STATUS, default='PENDING')
+    approval_amount_limit = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+    requires_justification = models.BooleanField(default=False)
+    
+    # Action Information
+    action_date = models.DateTimeField(null=True, blank=True)
+    action_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='approval_actions'
+    )
+    
+    # Comments & Justification
+    approver_comments = models.TextField(blank=True)
+    rejection_reason = models.TextField(blank=True)
+    justification_required = models.TextField(blank=True)
+    
+    # Timing & Escalation
+    requested_at = models.DateTimeField(auto_now_add=True)
+    due_date = models.DateTimeField(null=True, blank=True)
+    escalated_at = models.DateTimeField(null=True, blank=True)
+    escalated_to = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='escalated_approvals'
+    )
+    
+    # Notification Tracking
+    notification_sent_count = models.PositiveIntegerField(default=0)
+    last_notification_sent = models.DateTimeField(null=True, blank=True)
+    
+    objects = InventoryManager()
+    
+    class Meta:
+        db_table = 'inventory_purchase_order_approvals'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant_id', 'purchase_order', 'approval_level'],
+                name='unique_po_approval_level'
+            ),
+        ]
+        ordering = ['purchase_order', 'sequence', 'approval_level']
+        indexes = [
+            models.Index(fields=['tenant_id', 'approver', 'status']),
+            models.Index(fields=['tenant_id', 'status', 'due_date']),
+            models.Index(fields=['tenant_id', 'purchase_order']),
+        ]
+    
+    def __str__(self):
+        return f"{self.purchase_order.po_number} - {self.get_approval_level_display()} - {self.get_status_display()}"
+    
+    @property
+    def is_overdue(self):
+        """Check if approval is overdue"""
+        if self.due_date and self.status == 'PENDING':
+            return timezone.now() > self.due_date
+        return False
+    
+    @property
+    def days_pending(self):
+        """Number of days this approval has been pending"""
+        if self.status == 'PENDING':
+            return (timezone.now() - self.requested_at).days
+        return 0
+    
+    def approve(self, user, comments=''):
+        """Approve this level"""
+        if self.status != 'PENDING':
+            return False, f"Cannot approve - status is {self.status}"
+        
+        # Check approval authority
+        if user != self.approver and user != self.delegate:
+            return False, "User does not have approval authority for this level"
+        
+        # Check amount limits
+        if (self.approval_amount_limit and 
+            self.purchase_order.total_amount > self.approval_amount_limit):
+            return False, f"PO amount exceeds approval limit of {self.approval_amount_limit}"
+        
+        self.status = 'APPROVED'
+        self.action_date = timezone.now()
+        self.action_by = user
+        self.approver_comments = comments
+        
+        self.save(update_fields=['status', 'action_date', 'action_by', 'approver_comments'])
+        
+        # Check if all required approvals are complete
+        self._check_and_update_po_approval_status()
+        
+        return True, f"Approved by {self.get_approval_level_display()}"
+    
+    def reject(self, user, reason):
+        """Reject this approval"""
+        if self.status != 'PENDING':
+            return False, f"Cannot reject - status is {self.status}"
+        
+        if user != self.approver and user != self.delegate:
+            return False, "User does not have approval authority for this level"
+        
+        self.status = 'REJECTED'
+        self.action_date = timezone.now()
+        self.action_by = user
+        self.rejection_reason = reason
+        
+        self.save(update_fields=['status', 'action_date', 'action_by', 'rejection_reason'])
+        
+        # Update PO status to rejected
+        self.purchase_order.status = 'CANCELLED'
+        self.purchase_order.internal_notes = f"Rejected at {self.get_approval_level_display()}: {reason}\n{self.purchase_order.internal_notes}"
+        self.purchase_order.save(update_fields=['status', 'internal_notes'])
+        
+        return True, f"Rejected at {self.get_approval_level_display()}"
+    
+    def escalate(self, escalated_to_user, reason=''):
+        """Escalate approval to higher level"""
+        if self.status != 'PENDING':
+            return False, f"Cannot escalate - status is {self.status}"
+        
+        self.status = 'ESCALATED'
+        self.escalated_at = timezone.now()
+        self.escalated_to = escalated_to_user
+        self.approver_comments = f"Escalated: {reason}"
+        
+        self.save(update_fields=['status', 'escalated_at', 'escalated_to', 'approver_comments'])
+        
+        # Create new approval record for escalated user
+        escalated_approval = PurchaseOrderApproval.objects.create(
+            tenant_id=self.tenant_id,
+            purchase_order=self.purchase_order,
+            approval_level='L4',  # Assuming escalation goes to highest level
+            sequence=self.sequence + 10,
+            approver=escalated_to_user,
+            approval_amount_limit=None,  # No limit for escalated approvals
+            justification_required=f"Escalated from {self.get_approval_level_display()}: {reason}"
+        )
+        
+        return True, f"Escalated to {escalated_to_user.get_full_name()}"
+    
+    def send_reminder(self):
+        """Send reminder notification to approver"""
+        if self.status != 'PENDING':
+            return False, "Cannot send reminder - approval not pending"
+        
+        self.notification_sent_count += 1
+        self.last_notification_sent = timezone.now()
+        self.save(update_fields=['notification_sent_count', 'last_notification_sent'])
+        
+        # Here you would integrate with notification system
+        return True, "Reminder sent successfully"
+    
+    def _check_and_update_po_approval_status(self):
+        """Check if all required approvals are complete and update PO status"""
+        po_approvals = self.purchase_order.approvals.all()
+        
+        # Check if any approvals are rejected
+        if po_approvals.filter(status='REJECTED').exists():
+            return  # PO already handled in reject method
+        
+        # Check if all approvals are complete
+        pending_approvals = po_approvals.filter(status='PENDING')
+        if not pending_approvals.exists():
+            # All approvals complete
+            if po_approvals.filter(status='APPROVED').count() == po_approvals.count():
+                self.purchase_order.status = 'APPROVED'
+                self.purchase_order.approved_by = self.action_by
+                self.purchase_order.approved_at = timezone.now()
+                self.purchase_order.save(update_fields=['status', 'approved_by', 'approved_at'])
+    
+    @classmethod
+    def create_approval_workflow(cls, purchase_order, approval_rules=None):
+        """Create approval workflow based on PO amount and rules"""
+        po_amount = purchase_order.total_amount
+        
+        # Default approval rules (can be customized per tenant)
+        default_rules = [
+            {'min_amount': 0, 'max_amount': 1000, 'levels': ['L1']},
+            {'min_amount': 1000, 'max_amount': 5000, 'levels': ['L1', 'L2']},
+            {'min_amount': 5000, 'max_amount': 25000, 'levels': ['L1', 'L2', 'L3']},
+            {'min_amount': 25000, 'max_amount': 100000, 'levels': ['L1', 'L2', 'L3', 'FINANCE']},
+            {'min_amount': 100000, 'max_amount': None, 'levels': ['L1', 'L2', 'L3', 'L4', 'FINANCE', 'LEGAL']},
+        ]
+        
+        rules = approval_rules or default_rules
+        
+        # Find applicable rule
+        applicable_rule = None
+        for rule in rules:
+            if (po_amount >= rule['min_amount'] and 
+                (rule['max_amount'] is None or po_amount <= rule['max_amount'])):
+                applicable_rule = rule
+                break
+        
+        if not applicable_rule:
+            return False, "No approval rule found for this amount"
+        
+        # Create approval records
+        approvals_created = []
+        for i, level in enumerate(applicable_rule['levels'], 1):
+            # Here you would look up the actual approver based on org structure
+            # For now, we'll create the approval record without assigning an approver
+            approval = cls.objects.create(
+                tenant_id=purchase_order.tenant_id,
+                purchase_order=purchase_order,
+                approval_level=level,
+                sequence=i,
+                approval_amount_limit=applicable_rule.get('max_amount'),
+                due_date=timezone.now() + timezone.timedelta(days=3)  # 3 days to approve
+            )
+            approvals_created.append(approval)
+        
+        # Update PO status
+        purchase_order.status = 'PENDING_APPROVAL'
+        purchase_order.save(update_fields=['status'])
+        
+        return True, f"Created {len(approvals_created)} approval levels"

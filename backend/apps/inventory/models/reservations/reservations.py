@@ -871,3 +871,490 @@ class ReservationAllocation(TenantBaseModel):
             self.save(update_fields=['is_active'])
         
         return success, message
+
+
+class ReservationFulfillment(TenantBaseModel):
+    """
+    Track fulfillment of stock reservations with detailed picking and shipping integration
+    """
+    
+    FULFILLMENT_STATUS = [
+        ('PENDING', 'Pending'),
+        ('PICKED', 'Picked'),
+        ('PACKED', 'Packed'),
+        ('SHIPPED', 'Shipped'),
+        ('DELIVERED', 'Delivered'),
+        ('CANCELLED', 'Cancelled'),
+        ('RETURNED', 'Returned'),
+    ]
+    
+    FULFILLMENT_TYPES = [
+        ('FULL', 'Full Fulfillment'),
+        ('PARTIAL', 'Partial Fulfillment'),
+        ('SPLIT', 'Split Fulfillment'),
+        ('SUBSTITUTE', 'Substitute Product'),
+        ('BACKORDER', 'Backorder'),
+    ]
+    
+    # Reservation Reference
+    reservation_item = models.ForeignKey(
+        StockReservationItem,
+        on_delete=models.CASCADE,
+        related_name='fulfillments'
+    )
+    
+    # Basic Information
+    fulfillment_number = models.CharField(max_length=50, blank=True)
+    fulfillment_type = models.CharField(max_length=20, choices=FULFILLMENT_TYPES, default='FULL')
+    status = models.CharField(max_length=20, choices=FULFILLMENT_STATUS, default='PENDING')
+    
+    # Quantities
+    quantity_to_fulfill = models.DecimalField(max_digits=12, decimal_places=3)
+    quantity_picked = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    quantity_packed = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    quantity_shipped = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    quantity_delivered = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    quantity_returned = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    
+    # Stock Item & Location
+    stock_item = models.ForeignKey(
+        'stock.StockItem',
+        on_delete=models.CASCADE,
+        related_name='fulfillments'
+    )
+    pick_location = models.ForeignKey(
+        'warehouse.StockLocation',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='pick_fulfillments'
+    )
+    staging_location = models.ForeignKey(
+        'warehouse.StockLocation',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='staging_fulfillments'
+    )
+    
+    # Batch/Serial Tracking
+    batch = models.ForeignKey(
+        'stock.Batch',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='fulfillments'
+    )
+    serial_numbers = models.JSONField(default=list, blank=True)
+    
+    # Timing Information
+    planned_pick_date = models.DateTimeField(null=True, blank=True)
+    actual_pick_date = models.DateTimeField(null=True, blank=True)
+    planned_ship_date = models.DateTimeField(null=True, blank=True)
+    actual_ship_date = models.DateTimeField(null=True, blank=True)
+    estimated_delivery_date = models.DateTimeField(null=True, blank=True)
+    actual_delivery_date = models.DateTimeField(null=True, blank=True)
+    
+    # Personnel
+    assigned_picker = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='assigned_fulfillments'
+    )
+    picked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='picked_fulfillments'
+    )
+    packed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='packed_fulfillments'
+    )
+    shipped_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='shipped_fulfillments'
+    )
+    
+    # Shipping Information
+    carrier = models.CharField(max_length=100, blank=True)
+    service_level = models.CharField(max_length=100, blank=True)
+    tracking_number = models.CharField(max_length=100, blank=True)
+    package_weight = models.DecimalField(max_digits=8, decimal_places=3, null=True, blank=True)
+    package_dimensions = models.JSONField(default=dict, blank=True)
+    shipping_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    
+    # Quality & Condition
+    quality_check_required = models.BooleanField(default=False)
+    quality_check_passed = models.BooleanField(default=True)
+    quality_notes = models.TextField(blank=True)
+    condition_at_pick = models.CharField(max_length=50, blank=True)
+    condition_at_delivery = models.CharField(max_length=50, blank=True)
+    
+    # Customer Information
+    delivery_address = models.JSONField(default=dict, blank=True)
+    delivery_instructions = models.TextField(blank=True)
+    customer_contact = models.CharField(max_length=100, blank=True)
+    customer_phone = models.CharField(max_length=20, blank=True)
+    
+    # Performance Metrics
+    pick_time_minutes = models.PositiveIntegerField(null=True, blank=True)
+    pack_time_minutes = models.PositiveIntegerField(null=True, blank=True)
+    transit_time_hours = models.PositiveIntegerField(null=True, blank=True)
+    
+    # Cost Information
+    pick_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    pack_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total_fulfillment_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    
+    # Substitute Product Information (for substitution fulfillments)
+    is_substitution = models.BooleanField(default=False)
+    original_product = models.ForeignKey(
+        'catalog.Product',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='original_fulfillments'
+    )
+    substitute_reason = models.TextField(blank=True)
+    customer_approved_substitution = models.BooleanField(default=False)
+    
+    # Exception Handling
+    has_exceptions = models.BooleanField(default=False)
+    exception_notes = models.TextField(blank=True)
+    resolution_notes = models.TextField(blank=True)
+    
+    # Integration & External Systems
+    wms_fulfillment_id = models.CharField(max_length=100, blank=True)
+    tms_shipment_id = models.CharField(max_length=100, blank=True)
+    erp_fulfillment_id = models.CharField(max_length=100, blank=True)
+    
+    # Additional Information
+    priority_level = models.CharField(max_length=10, default='NORMAL')
+    rush_order = models.BooleanField(default=False)
+    special_handling = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+    
+    objects = InventoryManager()
+    
+    class Meta:
+        db_table = 'inventory_reservation_fulfillments'
+        ordering = ['-created_at', '-planned_ship_date']
+        indexes = [
+            models.Index(fields=['tenant_id', 'reservation_item', 'status']),
+            models.Index(fields=['tenant_id', 'status', 'planned_pick_date']),
+            models.Index(fields=['tenant_id', 'assigned_picker', 'status']),
+            models.Index(fields=['tenant_id', 'stock_item', 'status']),
+            models.Index(fields=['tenant_id', 'tracking_number']),
+            models.Index(fields=['tenant_id', 'carrier', 'actual_ship_date']),
+        ]
+    
+    def __str__(self):
+        return f"Fulfillment {self.fulfillment_number}: {self.stock_item.product.name} - {self.quantity_to_fulfill} units"
+    
+    def clean(self):
+        if not self.fulfillment_number:
+            self.fulfillment_number = self.generate_fulfillment_number()
+    
+    def generate_fulfillment_number(self):
+        """Generate unique fulfillment number"""
+        today = timezone.now().strftime('%Y%m%d')
+        last_fulfillment = ReservationFulfillment.objects.filter(
+            tenant_id=self.tenant_id,
+            fulfillment_number__startswith=f'FF-{today}'
+        ).order_by('-fulfillment_number').first()
+        
+        if last_fulfillment:
+            try:
+                last_seq = int(last_fulfillment.fulfillment_number.split('-')[-1])
+                next_seq = last_seq + 1
+            except (ValueError, IndexError):
+                next_seq = 1
+        else:
+            next_seq = 1
+        
+        return f"FF-{today}-{next_seq:06d}"
+    
+    @property
+    def quantity_remaining(self):
+        """Quantity still to be fulfilled"""
+        return self.quantity_to_fulfill - self.quantity_shipped
+    
+    @property
+    def fulfillment_percentage(self):
+        """Percentage of fulfillment completed"""
+        if self.quantity_to_fulfill > 0:
+            return (self.quantity_shipped / self.quantity_to_fulfill * 100).quantize(Decimal('0.01'))
+        return Decimal('0')
+    
+    @property
+    def is_overdue(self):
+        """Check if fulfillment is overdue"""
+        if self.planned_ship_date and self.status in ['PENDING', 'PICKED', 'PACKED']:
+            return timezone.now() > self.planned_ship_date
+        return False
+    
+    @property
+    def days_overdue(self):
+        """Number of days overdue"""
+        if self.is_overdue:
+            return (timezone.now() - self.planned_ship_date).days
+        return 0
+    
+    @property
+    def is_express_shipment(self):
+        """Check if this is an express/rush shipment"""
+        return self.rush_order or 'EXPRESS' in self.service_level.upper()
+    
+    def assign_picker(self, picker, planned_pick_date=None):
+        """Assign picker to this fulfillment"""
+        if self.status != 'PENDING':
+            return False, f"Cannot assign picker - status is {self.status}"
+        
+        self.assigned_picker = picker
+        if planned_pick_date:
+            self.planned_pick_date = planned_pick_date
+        
+        self.save(update_fields=['assigned_picker', 'planned_pick_date'])
+        
+        return True, f"Assigned to {picker.get_full_name()}"
+    
+    def start_picking(self, picker):
+        """Start the picking process"""
+        if self.status != 'PENDING':
+            return False, f"Cannot start picking - status is {self.status}"
+        
+        if self.assigned_picker and self.assigned_picker != picker:
+            return False, f"Assigned to different picker: {self.assigned_picker.get_full_name()}"
+        
+        # Check stock availability
+        if self.stock_item.available_quantity < self.quantity_to_fulfill:
+            return False, f"Insufficient stock. Available: {self.stock_item.available_quantity}"
+        
+        # Update pick start time for performance tracking
+        self.actual_pick_date = timezone.now()
+        self.picked_by = picker
+        
+        self.save(update_fields=['actual_pick_date', 'picked_by'])
+        
+        return True, "Picking started"
+    
+    def complete_picking(self, quantity_picked, picker, batch=None, serial_numbers=None):
+        """Complete the picking process"""
+        if self.status != 'PENDING':
+            return False, f"Cannot complete picking - status is {self.status}"
+        
+        if quantity_picked > self.quantity_to_fulfill:
+            return False, f"Cannot pick more than required. Required: {self.quantity_to_fulfill}"
+        
+        self.quantity_picked = quantity_picked
+        self.status = 'PICKED'
+        self.picked_by = picker
+        
+        if batch:
+            self.batch = batch
+        
+        if serial_numbers:
+            self.serial_numbers = serial_numbers
+        
+        # Calculate pick time
+        if self.actual_pick_date:
+            pick_duration = timezone.now() - self.actual_pick_date
+            self.pick_time_minutes = int(pick_duration.total_seconds() / 60)
+        
+        self.save(update_fields=[
+            'quantity_picked', 'status', 'picked_by', 'batch', 
+            'serial_numbers', 'pick_time_minutes'
+        ])
+        
+        return True, f"Picked {quantity_picked} units"
+    
+    def pack_items(self, packer, package_weight=None, dimensions=None):
+        """Pack the picked items"""
+        if self.status != 'PICKED':
+            return False, f"Cannot pack - status is {self.status}"
+        
+        pack_start_time = timezone.now()
+        
+        self.quantity_packed = self.quantity_picked
+        self.status = 'PACKED'
+        self.packed_by = packer
+        
+        if package_weight:
+            self.package_weight = package_weight
+        
+        if dimensions:
+            self.package_dimensions = dimensions
+        
+        # Calculate pack time
+        if self.actual_pick_date:
+            pack_duration = pack_start_time - self.actual_pick_date
+            self.pack_time_minutes = int(pack_duration.total_seconds() / 60)
+        
+        self.save(update_fields=[
+            'quantity_packed', 'status', 'packed_by', 'package_weight',
+            'package_dimensions', 'pack_time_minutes'
+        ])
+        
+        return True, f"Packed {self.quantity_packed} units"
+    
+    def ship_items(self, shipper, carrier, tracking_number, service_level=''):
+        """Ship the packed items"""
+        if self.status != 'PACKED':
+            return False, f"Cannot ship - status is {self.status}"
+        
+        self.quantity_shipped = self.quantity_packed
+        self.status = 'SHIPPED'
+        self.shipped_by = shipper
+        self.carrier = carrier
+        self.tracking_number = tracking_number
+        self.service_level = service_level
+        self.actual_ship_date = timezone.now()
+        
+        # Set estimated delivery date based on service level
+        if 'OVERNIGHT' in service_level.upper() or 'EXPRESS' in service_level.upper():
+            self.estimated_delivery_date = self.actual_ship_date + timedelta(days=1)
+        elif 'GROUND' in service_level.upper():
+            self.estimated_delivery_date = self.actual_ship_date + timedelta(days=3)
+        else:
+            self.estimated_delivery_date = self.actual_ship_date + timedelta(days=5)
+        
+        self.save(update_fields=[
+            'quantity_shipped', 'status', 'shipped_by', 'carrier',
+            'tracking_number', 'service_level', 'actual_ship_date',
+            'estimated_delivery_date'
+        ])
+        
+        # Update reservation item fulfillment
+        self.reservation_item.update_fulfillment_status()
+        
+        return True, f"Shipped {self.quantity_shipped} units with tracking {tracking_number}"
+    
+    def confirm_delivery(self, delivery_date=None):
+        """Confirm delivery of shipment"""
+        if self.status != 'SHIPPED':
+            return False, f"Cannot confirm delivery - status is {self.status}"
+        
+        self.status = 'DELIVERED'
+        self.quantity_delivered = self.quantity_shipped
+        self.actual_delivery_date = delivery_date or timezone.now()
+        
+        # Calculate transit time
+        if self.actual_ship_date and self.actual_delivery_date:
+            transit_duration = self.actual_delivery_date - self.actual_ship_date
+            self.transit_time_hours = int(transit_duration.total_seconds() / 3600)
+        
+        self.save(update_fields=[
+            'status', 'quantity_delivered', 'actual_delivery_date', 'transit_time_hours'
+        ])
+        
+        # Update reservation item fulfillment
+        self.reservation_item.update_fulfillment_status()
+        
+        return True, f"Delivery confirmed for {self.quantity_delivered} units"
+    
+    def process_return(self, return_quantity, reason, user):
+        """Process returned items"""
+        if return_quantity > self.quantity_delivered:
+            return False, f"Cannot return more than delivered. Delivered: {self.quantity_delivered}"
+        
+        self.quantity_returned = return_quantity
+        if return_quantity == self.quantity_delivered:
+            self.status = 'RETURNED'
+        
+        self.notes += f"\nReturn processed by {user.get_full_name()}: {return_quantity} units - {reason}"
+        
+        self.save(update_fields=['quantity_returned', 'status', 'notes'])
+        
+        # Return stock to inventory
+        success, message = self.stock_item.receive_stock(
+            return_quantity,
+            self.stock_item.unit_cost,
+            f"Customer return: {reason}",
+            reference_id=str(self.id),
+            user=user
+        )
+        
+        return success, f"Return processed: {message}"
+    
+    def cancel_fulfillment(self, reason, user):
+        """Cancel this fulfillment"""
+        if self.status in ['SHIPPED', 'DELIVERED']:
+            return False, f"Cannot cancel - status is {self.status}"
+        
+        self.status = 'CANCELLED'
+        self.notes += f"\nCancelled by {user.get_full_name()}: {reason}"
+        
+        self.save(update_fields=['status', 'notes'])
+        
+        # Release any allocated stock
+        if self.status in ['PICKED', 'PACKED']:
+            # Return picked quantity to available stock
+            success, message = self.stock_item.release_allocation(
+                self.quantity_picked,
+                f"Fulfillment cancelled: {reason}",
+                str(self.reservation_item.id)
+            )
+            
+            if not success:
+                return False, f"Failed to release stock: {message}"
+        
+        return True, "Fulfillment cancelled"
+    
+    def get_performance_metrics(self):
+        """Get fulfillment performance metrics"""
+        metrics = {
+            'fulfillment_rate': self.fulfillment_percentage,
+            'pick_time_minutes': self.pick_time_minutes,
+            'pack_time_minutes': self.pack_time_minutes,
+            'transit_time_hours': self.transit_time_hours,
+            'total_fulfillment_cost': self.total_fulfillment_cost,
+        }
+        
+        # Calculate on-time performance
+        if self.actual_ship_date and self.planned_ship_date:
+            on_time = self.actual_ship_date <= self.planned_ship_date
+            metrics['shipped_on_time'] = on_time
+            
+        if self.actual_delivery_date and self.estimated_delivery_date:
+            delivered_on_time = self.actual_delivery_date <= self.estimated_delivery_date
+            metrics['delivered_on_time'] = delivered_on_time
+        
+        return metrics
+    
+    @classmethod
+    def get_fulfillment_analytics(cls, tenant_id, date_range=None, picker=None):
+        """Get fulfillment performance analytics"""
+        from django.db.models import Avg, Sum, Count, F, Q
+        
+        queryset = cls.objects.filter(tenant_id=tenant_id)
+        
+        if date_range:
+            start_date, end_date = date_range
+            queryset = queryset.filter(actual_ship_date__range=[start_date, end_date])
+        
+        if picker:
+            queryset = queryset.filter(picked_by=picker)
+        
+        analytics = queryset.aggregate(
+            total_fulfillments=Count('id'),
+            avg_pick_time=Avg('pick_time_minutes'),
+            avg_pack_time=Avg('pack_time_minutes'),
+            avg_transit_time=Avg('transit_time_hours'),
+            total_quantity_shipped=Sum('quantity_shipped'),
+            total_fulfillment_cost=Sum('total_fulfillment_cost'),
+            on_time_shipments=Count('id', filter=Q(
+                actual_ship_date__lte=F('planned_ship_date')
+            )),
+        )
+        
+        # Calculate on-time percentage
+        if analytics['total_fulfillments'] > 0:
+            analytics['on_time_percentage'] = (
+                analytics['on_time_shipments'] / analytics['total_fulfillments'] * 100
+            )
+        else:
+            analytics['on_time_percentage'] = 0
+        
+        return analytics

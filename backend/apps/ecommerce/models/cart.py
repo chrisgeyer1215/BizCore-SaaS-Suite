@@ -1,25 +1,37 @@
 # apps/ecommerce/models/cart.py
 
 """
-Shopping cart and wishlist models
+Advanced AI-Powered Shopping Cart and Wishlist System
+Featuring machine learning recommendations, predictive analytics, and intelligent optimization
 """
 
 from django.db import models
 from django.contrib.auth import get_user_model
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
+from django.core.cache import cache
 from django.utils import timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 import uuid
+import json
+import logging
 from datetime import timedelta
+from collections import Counter, defaultdict
+from typing import Dict, List, Any, Optional, Tuple
 
-from .base import EcommerceBaseModel, CommonChoices
+from .base import EcommerceBaseModel, CommonChoices, AIOptimizedPricingMixin
 from .managers import CartManager
+from .cart_ai_methods import CartAIMixin
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
-class Cart(EcommerceBaseModel):
-    """Enhanced shopping cart model with session and user support"""
+class IntelligentCart(EcommerceBaseModel, CartAIMixin):
+    """
+    AI-Powered Intelligent Shopping Cart with advanced analytics, 
+    personalization, and predictive optimization
+    """
     
     class CartStatus(models.TextChoices):
         ACTIVE = 'ACTIVE', 'Active'
@@ -27,6 +39,8 @@ class Cart(EcommerceBaseModel):
         COMPLETED = 'COMPLETED', 'Completed'
         EXPIRED = 'EXPIRED', 'Expired'
         MERGED = 'MERGED', 'Merged'
+        OPTIMIZING = 'OPTIMIZING', 'AI Optimizing'
+        PERSONALIZED = 'PERSONALIZED', 'Personalized'
     
     # Cart Identification
     cart_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
@@ -59,6 +73,53 @@ class Cart(EcommerceBaseModel):
         choices=CommonChoices.Currency.choices,
         default=CommonChoices.Currency.USD
     )
+    
+    # AI-powered features
+    ai_recommendations = models.JSONField(default=list, blank=True)
+    personalization_score = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="AI personalization effectiveness score (0-100)"
+    )
+    conversion_probability = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="AI-predicted conversion probability (0-100%)"
+    )
+    abandonment_risk_score = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        help_text="AI-calculated abandonment risk (0-100)"
+    )
+    
+    # Behavioral analytics
+    interaction_history = models.JSONField(default=list, blank=True)
+    behavioral_segments = ArrayField(
+        models.CharField(max_length=50), default=list, blank=True
+    )
+    engagement_metrics = models.JSONField(default=dict, blank=True)
+    
+    # Intelligent pricing
+    dynamic_pricing_applied = models.BooleanField(default=False)
+    price_optimizations = models.JSONField(default=dict, blank=True)
+    discount_recommendations = models.JSONField(default=list, blank=True)
+    
+    # Cross-selling and upselling
+    recommended_products = models.JSONField(default=list, blank=True)
+    bundle_suggestions = models.JSONField(default=list, blank=True)
+    upsell_opportunities = models.JSONField(default=list, blank=True)
+    
+    # Predictive analytics
+    predicted_final_value = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    completion_likelihood = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True
+    )
+    optimal_checkout_time = models.DateTimeField(null=True, blank=True)
+    
+    # Smart notifications
+    notification_preferences = models.JSONField(default=dict, blank=True)
+    auto_save_reminders = models.BooleanField(default=True)
+    price_drop_alerts = models.BooleanField(default=True)
+    stock_alerts = models.BooleanField(default=True)
     
     # Totals (cached for performance)
     item_count = models.PositiveIntegerField(default=0)
@@ -106,8 +167,8 @@ class Cart(EcommerceBaseModel):
     
     def __str__(self):
         if self.user:
-            return f"Cart for {self.user.email}"
-        return f"Anonymous Cart {self.cart_id}"
+            return f"AI Cart for {self.user.email} (Score: {self.personalization_score or 'N/A'})"
+        return f"Anonymous AI Cart {self.cart_id}"
     
     def save(self, *args, **kwargs):
         # Set expiration if not set
@@ -138,10 +199,21 @@ class Cart(EcommerceBaseModel):
         abandonment_threshold = timezone.now() - timedelta(hours=24)
         return self.last_activity < abandonment_threshold
     
-    def add_item(self, product, variant=None, quantity=1, custom_price=None):
-        """Add item to cart"""
-        if self.status != self.CartStatus.ACTIVE:
+    def add_item(self, product, variant=None, quantity=1, custom_price=None, trigger_ai_analysis=True):
+        """Add item to cart with AI-powered optimization"""
+        if self.status not in [self.CartStatus.ACTIVE, self.CartStatus.PERSONALIZED]:
             raise ValidationError("Cannot add items to inactive cart")
+        
+        # Record interaction for behavioral analysis
+        self.record_interaction('add_item', {\n            'product_id': str(product.id),\n            'variant_id': str(variant.id) if variant else None,\n            'quantity': quantity,\n            'timestamp': timezone.now().isoformat()\n        })
+        
+        # AI-powered price optimization
+        optimized_price = custom_price
+        if not optimized_price and hasattr(product, 'calculate_ai_optimized_price'):
+            ai_price = product.calculate_ai_optimized_price()
+            if ai_price and product.enable_dynamic_pricing:
+                optimized_price = ai_price
+                self.dynamic_pricing_applied = True
         
         # Check if item already exists
         existing_item = self.items.filter(
@@ -151,18 +223,25 @@ class Cart(EcommerceBaseModel):
         
         if existing_item:
             existing_item.quantity += quantity
+            if optimized_price:
+                existing_item.unit_price = optimized_price
             existing_item.save()
             cart_item = existing_item
         else:
             # Create new cart item
-            cart_item = CartItem.objects.create(
+            cart_item = IntelligentCartItem.objects.create(
                 tenant=self.tenant,
                 cart=self,
                 product=product,
                 variant=variant,
                 quantity=quantity,
-                unit_price=custom_price or (variant.effective_price if variant else product.price)
+                unit_price=optimized_price or (variant.effective_price if variant else product.price)
             )
+        
+        # Trigger AI analysis and recommendations
+        if trigger_ai_analysis:
+            self.analyze_cart_with_ai()
+            self.generate_recommendations()
         
         # Update cart totals
         self.update_totals()
@@ -340,11 +419,11 @@ class Cart(EcommerceBaseModel):
             self.save()
 
 
-class CartItem(EcommerceBaseModel):
+class IntelligentCartItem(EcommerceBaseModel, AIOptimizedPricingMixin):
     """Individual items in shopping cart"""
     
     cart = models.ForeignKey(
-        Cart, 
+        IntelligentCart, 
         on_delete=models.CASCADE, 
         related_name='items'
     )
