@@ -6,7 +6,8 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 from datetime import date
 
-from ..abstract.base import TenantBaseModel, ActivatableMixin
+from apps.core.models import TenantBaseModel
+from ..abstract.base import ActivatableMixin
 from ...managers.base import InventoryManager
 
 
@@ -244,3 +245,146 @@ class VMIProduct(TenantBaseModel, ActivatableMixin):
     
     def __str__(self):
         return f"{self.vmi_agreement.vmi_number}: {self.product.name}"
+
+
+class VMIAgreement(VendorManagedInventory):
+    """
+    VMI (Vendor Managed Inventory) Agreement - Alias for VendorManagedInventory
+    This is a proxy model to maintain backward compatibility
+    """
+    
+    class Meta:
+        proxy = True
+        verbose_name = 'VMI Agreement'
+        verbose_name_plural = 'VMI Agreements'
+
+
+class SupplierPerformance(TenantBaseModel):
+    """
+    Supplier performance tracking and metrics
+    """
+    
+    PERFORMANCE_PERIODS = [
+        ('WEEKLY', 'Weekly'),
+        ('MONTHLY', 'Monthly'),
+        ('QUARTERLY', 'Quarterly'),
+        ('YEARLY', 'Yearly'),
+    ]
+    
+    supplier = models.ForeignKey(
+        'suppliers.Supplier',
+        on_delete=models.CASCADE,
+        related_name='performance_metrics'
+    )
+    
+    # Performance Period
+    period_type = models.CharField(max_length=10, choices=PERFORMANCE_PERIODS, default='MONTHLY')
+    period_start = models.DateField()
+    period_end = models.DateField()
+    
+    # Delivery Performance
+    total_orders = models.IntegerField(default=0)
+    on_time_deliveries = models.IntegerField(default=0)
+    late_deliveries = models.IntegerField(default=0)
+    early_deliveries = models.IntegerField(default=0)
+    cancelled_orders = models.IntegerField(default=0)
+    
+    # Quality Metrics
+    total_items_received = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    defective_items = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    returned_items = models.DecimalField(max_digits=12, decimal_places=3, default=0)
+    
+    # Cost Performance
+    total_spend = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    cost_savings = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    cost_overruns = models.DecimalField(max_digits=15, decimal_places=2, default=0)
+    
+    # Lead Time Performance
+    average_lead_time_days = models.DecimalField(max_digits=5, decimal_places=1, default=0)
+    promised_lead_time_days = models.DecimalField(max_digits=5, decimal_places=1, default=0)
+    
+    # Service Level
+    service_level_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=100)
+    fill_rate_percentage = models.DecimalField(max_digits=5, decimal_places=2, default=100)
+    
+    # Communication & Responsiveness
+    response_time_hours = models.DecimalField(max_digits=6, decimal_places=1, default=0)
+    communication_rating = models.DecimalField(
+        max_digits=3, decimal_places=1, default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    
+    # Overall Ratings (1-5 scale)
+    delivery_rating = models.DecimalField(
+        max_digits=3, decimal_places=1, default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    quality_rating = models.DecimalField(
+        max_digits=3, decimal_places=1, default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    cost_rating = models.DecimalField(
+        max_digits=3, decimal_places=1, default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    overall_rating = models.DecimalField(
+        max_digits=3, decimal_places=1, default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(5)]
+    )
+    
+    # Notes and Comments
+    notes = models.TextField(blank=True)
+    improvement_areas = models.TextField(blank=True)
+    
+    objects = InventoryManager()
+    
+    class Meta:
+        db_table = 'inventory_supplier_performance'
+        ordering = ['-period_end', '-period_start']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant_id', 'supplier', 'period_type', 'period_start', 'period_end'],
+                name='unique_supplier_performance_period'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant_id', 'supplier', 'period_type']),
+            models.Index(fields=['tenant_id', 'period_end']),
+            models.Index(fields=['overall_rating']),
+        ]
+    
+    def __str__(self):
+        return f"{self.supplier.name} - {self.get_period_type_display()} {self.period_start}"
+    
+    def save(self, *args, **kwargs):
+        # Calculate overall rating as weighted average
+        self.overall_rating = (
+            (self.delivery_rating * 0.3) +
+            (self.quality_rating * 0.3) +
+            (self.cost_rating * 0.2) +
+            (self.communication_rating * 0.2)
+        )
+        super().save(*args, **kwargs)
+    
+    @property
+    def on_time_delivery_percentage(self):
+        """Calculate on-time delivery percentage"""
+        if self.total_orders == 0:
+            return 0
+        return (self.on_time_deliveries / self.total_orders) * 100
+    
+    @property
+    def quality_percentage(self):
+        """Calculate quality percentage (non-defective items)"""
+        if self.total_items_received == 0:
+            return 100
+        defective_rate = (self.defective_items / self.total_items_received) * 100
+        return 100 - defective_rate
+    
+    @property
+    def lead_time_variance_percentage(self):
+        """Calculate lead time variance percentage"""
+        if self.promised_lead_time_days == 0:
+            return 0
+        variance = abs(self.average_lead_time_days - self.promised_lead_time_days)
+        return (variance / self.promised_lead_time_days) * 100

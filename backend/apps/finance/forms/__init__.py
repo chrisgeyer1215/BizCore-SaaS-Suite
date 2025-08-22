@@ -1,33 +1,41 @@
-backend/apps/finance/forms/__init__.py
+# backend/apps/finance/forms/__init__.py
 
 """
-Finance Module Forms
-Django forms for admin interface and frontend
+Finance Module Forms - Entry Point
+All financial form modules organized by domain
 """
 
-from .settings import FinanceSettingsForm
-from .accounts import AccountCategoryForm, AccountForm
-from .journal_entries import JournalEntryForm, JournalEntryLineFormSet
-from .invoices import InvoiceForm, InvoiceItemFormSet
-from .bills import BillForm, BillItemFormSet
-from .payments import PaymentForm, PaymentApplicationFormSet
-from .vendors import VendorForm, VendorContactFormSet
-from .bank_reconciliation import BankAccountForm, BankReconciliationForm
+# Core Forms
+from .accounts import *
+from .journal_entries import *
 
+# Transaction Forms
+from .invoices import *
+from .bills import *
+from .payments import *
+from .vendors import *
+
+# Configuration Forms
+from .settings import *
+
+# Reconciliation Forms
+from .bank_reconciliation import *
+
+# All forms for convenience
 __all__ = [
-    'FinanceSettingsForm',
-    'AccountCategoryForm',
-    'AccountForm',
-    'JournalEntryForm',
-    'JournalEntryLineFormSet',
-    'InvoiceForm',
-    'InvoiceItemFormSet',
-    'BillForm',
-    'BillItemFormSet',
-    'PaymentForm',
-    'PaymentApplicationFormSet',
-    'VendorForm',
-    'VendorContactFormSet',
-    'BankAccountForm',
-    'BankReconciliationForm',
+    # Core Management
+    'accounts',
+    'journal_entries',
+    
+    # Transaction Management
+    'invoices',
+    'bills',
+    'payments',
+    'vendors',
+    
+    # Configuration
+    'settings',
+    
+    # Reconciliation
+    'bank_reconciliation',
 ]

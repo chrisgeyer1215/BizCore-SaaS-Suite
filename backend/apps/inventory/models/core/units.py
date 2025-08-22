@@ -6,7 +6,8 @@ from django.core.validators import MinValueValidator
 from django.utils.text import slugify
 from decimal import Decimal, ROUND_HALF_UP
 
-from ..abstract.base import TenantBaseModel, ActivatableMixin
+from apps.core.models import TenantBaseModel
+from ..abstract.base import ActivatableMixin
 from ...managers.base import InventoryManager
 
 
@@ -131,3 +132,121 @@ class UnitOfMeasure(TenantBaseModel, ActivatableMixin):
             self.conversion_offset = Decimal('0')
         
         super().save(*args, **kwargs)
+
+
+class UnitConversion(TenantBaseModel):
+    """
+    Unit conversion rules for automatic conversions between units
+    """
+    
+    from_unit = models.ForeignKey(
+        UnitOfMeasure,
+        on_delete=models.CASCADE,
+        related_name='conversions_from'
+    )
+    to_unit = models.ForeignKey(
+        UnitOfMeasure,
+        on_delete=models.CASCADE,
+        related_name='conversions_to'
+    )
+    
+    # Conversion Formula: (from_value * factor) + offset = to_value
+    conversion_factor = models.DecimalField(max_digits=20, decimal_places=8, default=1)
+    conversion_offset = models.DecimalField(max_digits=20, decimal_places=8, default=0)
+    
+    # Rounding and precision
+    round_to_decimal_places = models.IntegerField(default=3)
+    
+    # Validation and notes
+    is_active = models.BooleanField(default=True)
+    notes = models.TextField(blank=True)
+    
+    objects = InventoryManager()
+    
+    class Meta:
+        db_table = 'inventory_unit_conversions'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant_id', 'from_unit', 'to_unit'],
+                name='unique_unit_conversion'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant_id', 'from_unit', 'is_active']),
+            models.Index(fields=['tenant_id', 'to_unit', 'is_active']),
+        ]
+    
+    def __str__(self):
+        return f"{self.from_unit.symbol} → {self.to_unit.symbol} (×{self.conversion_factor})"
+    
+    def convert(self, value):
+        """Convert a value from from_unit to to_unit"""
+        from decimal import Decimal, ROUND_HALF_UP
+        
+        value = Decimal(str(value))
+        result = (value * self.conversion_factor) + self.conversion_offset
+        
+        # Round to specified decimal places
+        return result.quantize(
+            Decimal('0.' + '0' * self.round_to_decimal_places),
+            rounding=ROUND_HALF_UP
+        )
+    
+    def reverse_convert(self, value):
+        """Convert a value from to_unit back to from_unit"""
+        from decimal import Decimal, ROUND_HALF_UP
+        
+        value = Decimal(str(value))
+        result = (value - self.conversion_offset) / self.conversion_factor
+        
+        # Round to specified decimal places
+        return result.quantize(
+            Decimal('0.' + '0' * self.round_to_decimal_places),
+            rounding=ROUND_HALF_UP
+        )
+    
+    def clean(self):
+        """Custom validation"""
+        super().clean()
+        
+        # Cannot convert unit to itself
+        if self.from_unit == self.to_unit:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("Cannot convert unit to itself")
+        
+        # Units must be of the same type
+        if self.from_unit.unit_type != self.to_unit.unit_type:
+            from django.core.exceptions import ValidationError
+            raise ValidationError("Can only convert between units of the same type")
+    
+    @classmethod
+    def find_conversion_path(cls, from_unit, to_unit, tenant_id):
+        """
+        Find a conversion path between two units (direct or through intermediary units)
+        Returns list of conversions to apply in sequence
+        """
+        # Try direct conversion first
+        direct = cls.objects.filter(
+            tenant_id=tenant_id,
+            from_unit=from_unit,
+            to_unit=to_unit,
+            is_active=True
+        ).first()
+        
+        if direct:
+            return [direct]
+        
+        # Try reverse conversion
+        reverse = cls.objects.filter(
+            tenant_id=tenant_id,
+            from_unit=to_unit,
+            to_unit=from_unit,
+            is_active=True
+        ).first()
+        
+        if reverse:
+            return [('reverse', reverse)]
+        
+        # For now, return empty list if no direct/reverse conversion found
+        # Could implement graph traversal for multi-step conversions here
+        return []

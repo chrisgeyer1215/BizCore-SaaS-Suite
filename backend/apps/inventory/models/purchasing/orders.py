@@ -8,7 +8,8 @@ from django.utils import timezone
 from decimal import Decimal
 from datetime import date
 
-from ..abstract.base import TenantBaseModel, SoftDeleteMixin, AuditableMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+from ..abstract.auditable import AuditableMixin
 from ...managers.base import InventoryManager
 
 User = get_user_model()

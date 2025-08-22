@@ -2,8 +2,17 @@
 # models/activity.py - 8 Models
 # ============================================================================
 
+from django.db import models
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.fields import GenericForeignKey
+from django.utils import timezone
+from django.core.validators import MinValueValidator, MaxValueValidator
+
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+from apps.core.utils import generate_code
+
+User = get_user_model()
 
 
 class ActivityType(TenantBaseModel, SoftDeleteMixin):

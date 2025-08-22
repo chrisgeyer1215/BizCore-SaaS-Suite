@@ -4,7 +4,7 @@ from django.utils import timezone
 from django.core.validators import FileExtensionValidator
 from decimal import Decimal
 import json
-from ..abstract.base import TenantBaseModel, SoftDeleteMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
 from ..abstract.auditable import AuditableMixin
 
 User = get_user_model()

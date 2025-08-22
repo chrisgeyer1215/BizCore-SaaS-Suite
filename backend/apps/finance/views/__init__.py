@@ -1,36 +1,57 @@
-# backend/apps/finance/views/__init__.py
-
 """
-Finance Module Views
-API ViewSets and endpoints for all finance functionality
+Finance Module Views - Entry Point
+All financial view modules organized by domain
 """
 
-from .dashboard import FinanceDashboardViewSet
-from .accounts import AccountCategoryViewSet, AccountViewSet
-from .journal_entries import JournalEntryViewSet
-from .bank_reconciliation import BankAccountViewSet, BankReconciliationViewSet
-from .invoices import InvoiceViewSet
-from .bills import BillViewSet
-from .payments import PaymentViewSet
-from .vendors import VendorViewSet
-from .customers import CustomerFinancialViewSet
-from .reports import FinancialReportsViewSet
-from .settings import FinanceSettingsViewSet
+# Core Views
+from .dashboard import *
+from .accounts import *
+from .journal_entries import *
+from .invoices import *
 
+# Transaction Views
+from .bills import *
+from .payments import *
+from .vendors import *
+
+# Reporting Views
+from .reports import *
+
+# Configuration Views
+from .settings import *
+
+# Reconciliation Views
+from .bank_reconciliation import *
+
+# Customer Views
+from .customers import *
+
+# All views for convenience
 __all__ = [
-    'FinanceDashboardViewSet',
-    'AccountCategoryViewSet',
-    'AccountViewSet', 
-    'JournalEntryViewSet',
-    'BankAccountViewSet',
-    'BankReconciliationViewSet',
-    'InvoiceViewSet',
-    'BillViewSet',
-    'PaymentViewSet',
-    'VendorViewSet',
-    'CustomerFinancialViewSet',
-    'FinancialReportsViewSet',
-    'FinanceSettingsViewSet',
+    # Dashboard
+    'dashboard',
+    
+    # Core Management
+    'accounts',
+    'journal_entries',
+    'invoices',
+    
+    # Transaction Management
+    'bills',
+    'payments',
+    'vendors',
+    
+    # Reporting
+    'reports',
+    
+    # Configuration
+    'settings',
+    
+    # Reconciliation
+    'bank_reconciliation',
+    
+    # Customer Management
+    'customers',
 ]
 
 

@@ -5,7 +5,8 @@ from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 
-from ..abstract.base import TenantBaseModel, SoftDeleteMixin, ActivatableMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+from ..abstract.base import ActivatableMixin
 from ...managers.base import InventoryManager
 
 

@@ -9,7 +9,7 @@ from django.utils import timezone
 from decimal import Decimal
 import uuid
 
-from ..abstract.base import TenantBaseModel
+from apps.core.models import TenantBaseModel
 from ...managers.base import InventoryManager
 
 User = get_user_model()

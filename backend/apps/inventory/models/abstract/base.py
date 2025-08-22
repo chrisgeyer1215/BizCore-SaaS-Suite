@@ -5,27 +5,34 @@ from django.db.models import Q
 
 User = get_user_model()
 
-class TenantBaseModel(models.Model):
+class ActivatableMixin(models.Model):
     """
-    Base model for all multi-tenant inventory models
+    Mixin to provide activation/deactivation functionality
     """
-    tenant = models.ForeignKey(
-        'core.Tenant',  # Assuming you have a core app with Tenant model
-        on_delete=models.CASCADE,
-        related_name='%(app_label)s_%(class)s_objects'
-    )
+    is_active = models.BooleanField(default=True, db_index=True)
     
     class Meta:
         abstract = True
-        indexes = [
-            models.Index(fields=['tenant']),
-        ]
     
-    def save(self, *args, **kwargs):
-        # Ensure tenant is set for all saves
-        if not self.tenant_id and hasattr(self, '_current_tenant'):
-            self.tenant = self._current_tenant
-        super().save(*args, **kwargs)
+    def activate(self):
+        """Activate the object"""
+        self.is_active = True
+        self.save(update_fields=['is_active'])
+    
+    def deactivate(self):
+        """Deactivate the object"""
+        self.is_active = False
+        self.save(update_fields=['is_active'])
+    
+    @classmethod
+    def get_active(cls):
+        """Get queryset of active objects"""
+        return cls.objects.filter(is_active=True)
+    
+    @classmethod
+    def get_inactive(cls):
+        """Get queryset of inactive objects"""
+        return cls.objects.filter(is_active=False)
 
 class SoftDeleteMixin(models.Model):
     """
@@ -73,3 +80,14 @@ class SoftDeleteMixin(models.Model):
     def get_deleted(cls):
         """Get queryset of deleted objects"""
         return cls.objects.filter(is_deleted=True)
+
+
+class OrderableMixin(models.Model):
+    """
+    Mixin for models that need ordering/sorting
+    """
+    sort_order = models.PositiveIntegerField(default=0)
+    
+    class Meta:
+        abstract = True
+        ordering = ['sort_order']

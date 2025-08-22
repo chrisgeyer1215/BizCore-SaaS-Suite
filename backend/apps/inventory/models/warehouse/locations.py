@@ -4,7 +4,8 @@ Stock location management within warehouses
 from django.db import models
 from decimal import Decimal
 
-from ..abstract.base import TenantBaseModel, ActivatableMixin
+from apps.core.models import TenantBaseModel
+from ..abstract.base import ActivatableMixin
 from ...managers.base import InventoryManager
 
 

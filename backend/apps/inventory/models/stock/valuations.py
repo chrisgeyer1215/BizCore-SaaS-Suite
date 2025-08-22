@@ -5,7 +5,8 @@ from django.db import models
 from django.utils import timezone
 from decimal import Decimal
 
-from ..abstract.base import TenantBaseModel, ActivatableMixin
+from apps.core.models import TenantBaseModel
+from ..abstract.base import ActivatableMixin
 from ...managers.base import InventoryManager
 
 

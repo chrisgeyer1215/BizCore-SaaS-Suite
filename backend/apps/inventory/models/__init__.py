@@ -6,7 +6,7 @@ from .core.brands import Brand
 from .core.attributes import ProductAttribute, AttributeValue
 
 # Supplier models
-from .suppliers.suppliers import Supplier, SupplierContact, SupplierDocument
+from .suppliers.suppliers import Supplier, SupplierContact
 from .suppliers.relationships import ProductSupplier, VMIAgreement, SupplierPerformance
 
 # Warehouse models
@@ -16,18 +16,16 @@ from .warehouse.locations import StockLocation
 # Product catalog models
 from .catalog.products import Product
 from .catalog.variations import ProductVariation
-from .catalog.attributes import ProductAttributeValue
 
 # Stock models
 from .stock.items import StockItem
 from .stock.movements import StockMovement, StockMovementItem
 from .stock.batches import Batch, SerialNumber
-from .stock.valuation import StockValuationLayer, LandedCost, LandedCostAllocation
-from .stock.tracking import StockSnapshot, StockHistory
+from .stock.valuations import StockValuationLayer, CostAllocation, CostAdjustment
 
 # Purchasing models
 from .purchasing.orders import PurchaseOrder, PurchaseOrderItem, PurchaseOrderApproval
-from .purchasing.receipts import StockReceipt, StockReceiptItem
+from .purchasing.reciepts import StockReceipt, StockReceiptItem
 
 # Transfer models
 from .transfers.transfers import StockTransfer, StockTransferItem
@@ -43,10 +41,10 @@ from .reservations.reservations import StockReservation, StockReservationItem, R
 from .alerts.alerts import InventoryAlert, AlertRule, AlertHistory
 
 # Report models
-from .reports.reports import InventoryReport, ReportTemplate, ReportSchedule, ReportExecution
+from .reports.report import InventoryReport, ReportTemplate, ReportSchedule, ReportExecution
 
 # Abstract models (for inheritance)
-from .abstract.base import TenantBaseModel, SoftDeleteMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
 from .abstract.auditable import AuditableMixin, FullAuditMixin, AuditLog
 from .abstract.timestamped import TimestampedMixin, CreatedUpdatedMixin
 from .abstract.trackable import ChangeTrackableMixin, StatusTrackableMixin
@@ -60,21 +58,20 @@ __all__ = [
     'ProductAttribute', 'AttributeValue',
     
     # Supplier models
-    'Supplier', 'SupplierContact', 'SupplierDocument',
+    'Supplier', 'SupplierContact',
     'ProductSupplier', 'VMIAgreement', 'SupplierPerformance',
     
     # Warehouse models
     'Warehouse', 'StockLocation',
     
     # Product catalog models
-    'Product', 'ProductVariation', 'ProductAttributeValue',
+    'Product', 'ProductVariation',
     
     # Stock models
     'StockItem',
     'StockMovement', 'StockMovementItem',
     'Batch', 'SerialNumber',
-    'StockValuationLayer', 'LandedCost', 'LandedCostAllocation',
-    'StockSnapshot', 'StockHistory',
+    'StockValuationLayer', 'CostAllocation', 'CostAdjustment',
     
     # Purchasing models
     'PurchaseOrder', 'PurchaseOrderItem', 'PurchaseOrderApproval',

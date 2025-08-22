@@ -280,12 +280,12 @@ class StockMovementManager(TenantAwareManager):
                 **kwargs
             )
             
-            # Create
-                movement_item = StockMovementItem(
-                    movement=movement,
-                    **item_data
-                )
-                movement_items.append(movement_item)
+            # Create movement item
+            movement_item = StockMovementItem(
+                movement=movement,
+                **item_data
+            )
+            movement_items.append(movement_item)
             
             StockMovementItem.objects.bulk_create(movement_items)
             

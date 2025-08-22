@@ -235,7 +235,7 @@ class BulkOperationsMixin:
                 ]
                 StockMovementItem.objects.bulk_create(movement_items)
     
-    def bulk_create_products_with_stock(self, products tenant):
+    def bulk_create_products_with_stock(self, products, tenant):
         """
         Bulk create products with initial stock
         """
@@ -250,12 +250,14 @@ class BulkOperationsMixin:
                 stock_data = product_data.pop('initial_stock', {})
                 
                 product = Product(tenant=tenant, **product_data)
-                products.append(product)_item = StockItem(
-                        tenant=tenant,
-                        product=product,
-                        **stock_data
-                    )
-                    stock_items.append(stock_item)
+                products.append(product)
+                
+                stock_item = StockItem(
+                    tenant=tenant,
+                    product=product,
+                    **stock_data
+                )
+                stock_items.append(stock_item)
             
             # Bulk create products
             Product.objects.bulk_create(products)
@@ -269,7 +271,7 @@ class BulkOperationsMixin:
             
             return products
     
-    def bulk_process_transfers(self, transfers_ Any]], tenant):
+    def bulk_process_transfers(self, transfers, tenant):
         """
         Bulk process stock transfers
         """
@@ -279,7 +281,7 @@ class BulkOperationsMixin:
         with transaction.atomic():
             transfers_created = []
             
-            for transfer
+            for transfer_data in transfers:
                 items_data = transfer_data.pop('items', [])
                 
                 # Create transfer
@@ -290,7 +292,8 @@ class BulkOperationsMixin:
                 
                 # Create transfer items
                 transfer_items = []
-                for item_data in items_item = StockTransferItem(
+                for item_data in items_data:
+                    transfer_item = StockTransferItem(
                         transfer=transfer,
                         **item_data
                     )

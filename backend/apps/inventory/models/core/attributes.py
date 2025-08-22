@@ -5,7 +5,8 @@ from django.db import models
 from django.utils.text import slugify
 from django.core.validators import MinValueValidator
 
-from ..abstract.base import TenantBaseModel, ActivatableMixin, OrderableMixin
+from apps.core.models import TenantBaseModel
+from ..abstract.base import ActivatableMixin, OrderableMixin
 from ...managers.base import InventoryManager
 
 

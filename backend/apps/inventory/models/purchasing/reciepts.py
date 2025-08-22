@@ -6,7 +6,8 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from decimal import Decimal
 
-from ..abstract.base import TenantBaseModel, AuditableMixin
+from apps.core.models import TenantBaseModel
+from ..abstract.auditable import AuditableMixin
 from ...managers.base import InventoryManager
 
 User = get_user_model()

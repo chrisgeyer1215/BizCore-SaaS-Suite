@@ -5,7 +5,8 @@ from django.db import models
 from django.utils.text import slugify
 from django.contrib.auth import get_user_model
 
-from ..abstract.base import TenantBaseModel, SoftDeleteMixin, ActivatableMixin, OrderableMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+from ..abstract.base import ActivatableMixin, OrderableMixin
 from ...managers.base import InventoryManager
 
 User = get_user_model()

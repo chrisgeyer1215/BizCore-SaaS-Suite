@@ -1,35 +1,136 @@
-# ============================================================================
-# backend/apps/crm/models/territory.py - Territory & Team Management Models
-# ============================================================================
+"""
+CRM Territory Models - Complete Implementation
+Models: TerritoryType, Territory, TerritoryAssignment, Team, TeamMembership
+Completion of Stage 2 CRM development
+"""
 
 from django.db import models
 from django.contrib.auth import get_user_model
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
-from django.core.exceptions import ValidationError
 from decimal import Decimal
+import uuid
 
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
-from apps.core.utils import generate_code
 
 User = get_user_model()
+
+
+class TerritoryType(TenantBaseModel):
+    """Territory type classification system"""
+    
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    color = models.CharField(max_length=7, default='#007bff')  # Hex color for UI
+    icon = models.CharField(max_length=50, blank=True)
+    
+    # Settings
+    is_active = models.BooleanField(default=True)
+    sort_order = models.IntegerField(default=0)
+    
+    # Configuration
+    allow_overlap = models.BooleanField(default=False)
+    auto_assignment_enabled = models.BooleanField(default=True)
+    requires_approval = models.BooleanField(default=False)
+    
+    class Meta:
+        ordering = ['sort_order', 'name']
+        verbose_name = 'Territory Type'
+        verbose_name_plural = 'Territory Types'
+        
+    def __str__(self):
+        return self.name
+
+
 class Territory(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced territory management with geographic and account-based territories"""
+    """Sales territories with geographic and business rule boundaries"""
     
     TERRITORY_TYPES = [
-        ('GEOGRAPHIC', 'Geographic'),
-        ('ACCOUNT_BASED', 'Account Based'),
-        ('PRODUCT_BASED', 'Product Based'),
-        ('INDUSTRY_BASED', 'Industry Based'),
-        ('HYBRID', 'Hybrid'),
+        ('GEOGRAPHIC', 'Geographic Territory'),
+        ('PRODUCT', 'Product-based Territory'),
+        ('INDUSTRY', 'Industry-based Territory'),
+        ('ACCOUNT_SIZE', 'Account Size Territory'),
+        ('CHANNEL', 'Channel Territory'),
+        ('NAMED_ACCOUNTS', 'Named Accounts'),
     ]
     
-    # Territory Information
-    name = models.CharField(max_length=255)
-    code = models.CharField(max_length=50, blank=True)
-    description = models.TextField(blank=True)
-    territory_type = models.CharField(max_length=20, choices=TERRITORY_TYPES, default='GEOGRAPHIC')
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('INACTIVE', 'Inactive'),
+        ('PENDING', 'Pending Approval'),
+        ('SUSPENDED', 'Suspended'),
+    ]
     
-    # Hierarchy
+    # Basic Information
+    name = models.CharField(max_length=200)
+    code = models.CharField(max_length=50)
+    description = models.TextField(blank=True)
+    territory_type = models.ForeignKey(
+        TerritoryType,
+        on_delete=models.PROTECT,
+        related_name='territories'
+    )
+    
+    # Status & Management
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
+    manager = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='managed_territories'
+    )
+    
+    # Geographic Boundaries
+    countries = models.JSONField(default=list, blank=True)
+    states_provinces = models.JSONField(default=list, blank=True)
+    cities = models.JSONField(default=list, blank=True)
+    postal_codes = models.JSONField(default=list, blank=True)
+    zip_code_ranges = models.JSONField(default=list, blank=True)
+    
+    # Business Rules
+    criteria = models.JSONField(default=dict, blank=True)
+    assignment_rules = models.JSONField(default=dict, blank=True)
+    
+    # Targets & Goals
+    annual_revenue_target = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    quarterly_target = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    monthly_target = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    
+    # Performance Tracking
+    current_revenue = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=Decimal('0.00')
+    )
+    ytd_revenue = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=Decimal('0.00')
+    )
+    
+    # Settings
+    allow_overlap = models.BooleanField(default=False)
+    auto_assign_leads = models.BooleanField(default=True)
+    auto_assign_accounts = models.BooleanField(default=True)
+    priority_score = models.IntegerField(default=50)
+    
+    # Parent/Child Hierarchy
     parent_territory = models.ForeignKey(
         'self',
         on_delete=models.CASCADE,
@@ -37,399 +138,569 @@ class Territory(TenantBaseModel, SoftDeleteMixin):
         blank=True,
         related_name='sub_territories'
     )
-    level = models.PositiveSmallIntegerField(default=0)
+    level = models.IntegerField(default=0)
     
-    # Geographic Configuration
-    countries = models.JSONField(default=list)
-    states_provinces = models.JSONField(default=list)
-    cities = models.JSONField(default=list)
-    postal_codes = models.JSONField(default=list)
-    geographic_bounds = models.JSONField(default=dict)  # Lat/Lng boundaries
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'Territory'
+        verbose_name_plural = 'Territories'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'code'],
+                name='unique_territory_code_per_tenant'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant', 'status', 'territory_type']),
+            models.Index(fields=['tenant', 'manager']),
+            models.Index(fields=['tenant', 'parent_territory']),
+        ]
+        
+    def __str__(self):
+        return f"{self.code} - {self.name}"
     
-    # Account-Based Configuration
-    account_criteria = models.JSONField(default=dict)
-    revenue_range = models.JSONField(default=dict)
-    employee_count_range = models.JSONField(default=dict)
-    industries = models.ManyToManyField(
-        Industry,
-        blank=True,
-        related_name='territories'
+    def save(self, *args, **kwargs):
+        # Calculate hierarchy level
+        if self.parent_territory:
+            self.level = self.parent_territory.level + 1
+        else:
+            self.level = 0
+        super().save(*args, **kwargs)
+    
+    @property
+    def target_achievement_percentage(self):
+        """Calculate target achievement percentage"""
+        if self.annual_revenue_target and self.annual_revenue_target > 0:
+            return (self.current_revenue / self.annual_revenue_target) * 100
+        return Decimal('0.00')
+    
+    @property
+    def is_over_target(self):
+        """Check if territory is over annual target"""
+        return self.target_achievement_percentage > 100
+    
+    def get_assigned_users(self):
+        """Get all users assigned to this territory"""
+        return User.objects.filter(
+            territory_assignments__territory=self,
+            territory_assignments__is_active=True
+        ).distinct()
+    
+    def get_total_team_size(self):
+        """Get total number of active team members"""
+        return self.assignments.filter(is_active=True).count()
+    
+    def check_geographic_match(self, address_data):
+        """Check if an address matches this territory's geographic criteria"""
+        if not address_data:
+            return False
+        
+        # Check countries
+        if self.countries and address_data.get('country'):
+            if address_data['country'] not in self.countries:
+                return False
+        
+        # Check states/provinces
+        if self.states_provinces and address_data.get('state'):
+            if address_data['state'] not in self.states_provinces:
+                return False
+        
+        # Check cities
+        if self.cities and address_data.get('city'):
+            if address_data['city'] not in self.cities:
+                return False
+        
+        # Check postal codes
+        if self.postal_codes and address_data.get('postal_code'):
+            if address_data['postal_code'] not in self.postal_codes:
+                return False
+        
+        return True
+
+
+class TerritoryAssignment(TenantBaseModel):
+    """Assign users to territories with roles and effective dates"""
+    
+    ASSIGNMENT_ROLES = [
+        ('MANAGER', 'Territory Manager'),
+        ('REP', 'Sales Representative'),
+        ('SUPPORT', 'Support Representative'),
+        ('OVERLAY', 'Overlay Specialist'),
+        ('BACKUP', 'Backup Representative'),
+        ('OBSERVER', 'Observer'),
+    ]
+    
+    ASSIGNMENT_TYPES = [
+        ('PRIMARY', 'Primary Assignment'),
+        ('SECONDARY', 'Secondary Assignment'),
+        ('TEMPORARY', 'Temporary Assignment'),
+        ('BACKUP', 'Backup Assignment'),
+    ]
+    
+    # Core Assignment
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='territory_assignments'
+    )
+    territory = models.ForeignKey(
+        Territory,
+        on_delete=models.CASCADE,
+        related_name='assignments'
     )
     
-    # Product Configuration
-    product_lines = models.JSONField(default=list)
+    # Assignment Details
+    role = models.CharField(max_length=20, choices=ASSIGNMENT_ROLES, default='REP')
+    assignment_type = models.CharField(max_length=20, choices=ASSIGNMENT_TYPES, default='PRIMARY')
     
-    # Assignment Rules
-    auto_assignment_enabled = models.BooleanField(default=True)
-    assignment_priority = models.IntegerField(default=10)
+    # Dates & Status
+    start_date = models.DateField(default=timezone.now)
+    end_date = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
     
-    # Performance Targets
-    revenue_target = models.DecimalField(
+    # Permissions & Access
+    can_view_all_accounts = models.BooleanField(default=True)
+    can_edit_accounts = models.BooleanField(default=True)
+    can_create_opportunities = models.BooleanField(default=True)
+    can_manage_leads = models.BooleanField(default=True)
+    can_assign_territories = models.BooleanField(default=False)
+    
+    # Performance & Targets
+    individual_target = models.DecimalField(
         max_digits=15,
         decimal_places=2,
         null=True,
         blank=True
     )
-    lead_target = models.IntegerField(null=True, blank=True)
-    opportunity_target = models.IntegerField(null=True, blank=True)
-    
-    # Performance Metrics (Auto-calculated)
-    total_accounts = models.IntegerField(default=0)
-    total_leads = models.IntegerField(default=0)
-    total_opportunities = models.IntegerField(default=0)
-    total_revenue = models.DecimalField(
-        max_digits=15,
+    commission_percentage = models.DecimalField(
+        max_digits=5,
         decimal_places=2,
-        default=Decimal('0.00')
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(0), MaxValueValidator(100)]
     )
     
-    # Settings
-    is_active = models.BooleanField(default=True)
+    # Assignment Metadata
+    assigned_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='territory_assignments_made'
+    )
+    assignment_reason = models.CharField(max_length=200, blank=True)
+    notes = models.TextField(blank=True)
     
     class Meta:
-        ordering = ['level', 'name']
-        verbose_name_plural = 'Territories'
+        ordering = ['-start_date']
+        verbose_name = 'Territory Assignment'
+        verbose_name_plural = 'Territory Assignments'
         constraints = [
             models.UniqueConstraint(
-                fields=['tenant', 'code'],
-                name='unique_tenant_territory_code',
-                condition=models.Q(code__isnull=False)
+                fields=['tenant', 'user', 'territory', 'assignment_type'],
+                condition=models.Q(is_active=True),
+                name='unique_active_territory_assignment'
             ),
         ]
         indexes = [
-            models.Index(fields=['tenant', 'territory_type', 'is_active']),
-            models.Index(fields=['tenant', 'parent_territory']),
+            models.Index(fields=['tenant', 'user', 'is_active']),
+            models.Index(fields=['tenant', 'territory', 'is_active']),
+            models.Index(fields=['tenant', 'start_date', 'end_date']),
         ]
         
     def __str__(self):
-        return self.name
+        return f"{self.user.get_full_name()} - {self.territory.name} ({self.role})"
     
-    def save(self, *args, **kwargs):
-        if not self.code:
-            self.code = self.generate_territory_code()
+    def clean(self):
+        """Validate territory assignment"""
+        from django.core.exceptions import ValidationError
         
-        # Auto-calculate level based on parent
-        if self.parent_territory:
-            self.level = self.parent_territory.level + 1
-        else:
-            self.level = 0
+        if self.end_date and self.start_date > self.end_date:
+            raise ValidationError('End date cannot be before start date')
         
-        super().save(*args, **kwargs)
-    
-    def generate_territory_code(self):
-        """Generate unique territory code"""
-        return generate_code('TERR', self.tenant_id)
-    
-    def get_assigned_users(self):
-        """Get all users assigned to this territory"""
-        return User.objects.filter(
-            crm_profile__territory=self,
-            crm_profile__is_active=True
-        )
-    
-    def update_performance_metrics(self):
-        """Update territory performance metrics"""
-        # This would be called by signals or scheduled tasks
-        self.total_accounts = self.accounts.filter(is_active=True).count()
-        self.total_leads = self.leads.filter(is_active=True).count()
-        self.total_opportunities = self.opportunities.filter(is_active=True).count()
-        
-        # Calculate total revenue from won opportunities
-        won_revenue = self.opportunities.filter(
-            is_won=True,
-            is_active=True
-        ).aggregate(
-            total=models.Sum('amount')
-        )['total'] or Decimal('0.00')
-        
-        self.total_revenue = won_revenue
-        self.save(update_fields=[
-            'total_accounts',
-            'total_leads', 
-            'total_opportunities',
-            'total_revenue'
-        ])
+        # Check for overlapping primary assignments
+        if self.assignment_type == 'PRIMARY' and self.is_active:
+            overlapping = TerritoryAssignment.objects.filter(
+                tenant=self.tenant,
+                user=self.user,
+                territory=self.territory,
+                assignment_type='PRIMARY',
+                is_active=True
+            ).exclude(pk=self.pk)
+            
+            if overlapping.exists():
+                raise ValidationError(
+                    'User already has an active primary assignment to this territory'
+                )
     
     @property
-    def revenue_achievement_percentage(self):
-        """Calculate revenue achievement against target"""
-        if self.revenue_target and self.revenue_target > 0:
-            return (self.total_revenue / self.revenue_target) * 100
-        return 0
+    def is_current(self):
+        """Check if assignment is currently active"""
+        today = timezone.now().date()
+        if not self.is_active:
+            return False
+        if self.start_date > today:
+            return False
+        if self.end_date and self.end_date < today:
+            return False
+        return True
+    
+    @property
+    def days_remaining(self):
+        """Calculate days remaining in assignment"""
+        if not self.end_date:
+            return None
+        today = timezone.now().date()
+        return (self.end_date - today).days
+    
+    def deactivate_assignment(self, end_reason=None):
+        """Deactivate the territory assignment"""
+        self.is_active = False
+        self.end_date = timezone.now().date()
+        if end_reason:
+            self.notes = f"{self.notes}\nDeactivated: {end_reason}".strip()
+        self.save()
 
 
 class Team(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced team management with hierarchy and permissions"""
+    """Team management and hierarchy system"""
     
     TEAM_TYPES = [
         ('SALES', 'Sales Team'),
-        ('MARKETING', 'Marketing Team'),
         ('SUPPORT', 'Support Team'),
+        ('MARKETING', 'Marketing Team'),
         ('MANAGEMENT', 'Management Team'),
         ('PRODUCT', 'Product Team'),
-        ('CUSTOM', 'Custom Team'),
+        ('OPERATIONS', 'Operations Team'),
+        ('FINANCE', 'Finance Team'),
+        ('TECHNICAL', 'Technical Team'),
     ]
     
-    # Team Information
-    name = models.CharField(max_length=255)
+    STATUS_CHOICES = [
+        ('ACTIVE', 'Active'),
+        ('INACTIVE', 'Inactive'),
+        ('FORMING', 'Forming'),
+        ('SUSPENDED', 'Suspended'),
+    ]
+    
+    # Basic Information
+    name = models.CharField(max_length=200)
+    code = models.CharField(max_length=50)
     description = models.TextField(blank=True)
     team_type = models.CharField(max_length=20, choices=TEAM_TYPES, default='SALES')
     
-    # Hierarchy
+    # Status & Management
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
+    team_lead = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='led_teams'
+    )
+    manager = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='managed_teams'
+    )
+    
+    # Team Hierarchy
     parent_team = models.ForeignKey(
         'self',
         on_delete=models.CASCADE,
         null=True,
         blank=True,
-        related_name    def resolve(self, user, resolution):
-        """Resolve ticket"""
-        self.status = 'RESOLVED'
-        self.resolved_at = timezone.now()
-        self.resolved_by = user
-        self.resolution = resolution
-        self.updated_by = user
-        
-        # Calculate resolution time
-        resolution_time = self.resolved_at - self.created_at
-        self.resolution_time_minutes = int(resolution_time.total_seconds() / 60)
-        
-        self.save()
-    
-    @property
-    def is_overdue(self):
-        """Check if ticket is overdue"""
-        if self.due_date and self.status not in ['RESOLVED', 'CLOSED']:
-            return timezone.now() > self.due_date
-        return False
-    
-    @property
-    def time_to_resolution(self):
-        """Get time to resolution in human readable format"""
-        if self.resolution_time_minutes:
-            hours, minutes = divmod(self.resolution_time_minutes, 60)
-            days, hours = divmod(hours, 24)
-            if days > 0:
-                return f'{days}d {hours}h {minutes}m'
-            elif hours > 0:
-                return f'{hours}h {minutes}m'
-            else:
-                return f'{minutes}m'
-        return None
-
-
-class TicketComment(TenantBaseModel):
-    """Enhanced ticket comments with rich formatting"""
-    
-    COMMENT_TYPES = [
-        ('PUBLIC', 'Public Comment'),
-        ('INTERNAL', 'Internal Note'),
-        ('SYSTEM', 'System Generated'),
-        ('EMAIL', 'Email Reply'),
-    ]
-    
-    ticket = models.ForeignKey(
-        Ticket,
-        on_delete=models.CASCADE,
-        related_name='comments'
+        related_name='sub_teams'
     )
+    level = models.IntegerField(default=0)
     
-    # Comment Content
-    comment_type = models.CharField(max_length=15, choices=COMMENT_TYPES, default='PUBLIC')
-    content = models.TextField()
-    is_html = models.BooleanField(default=False)
-    
-    # Author Information
-    author = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
+    # Targets & Goals
+    team_revenue_target = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
         null=True,
-        blank=True,
-        related_name='ticket_comments'
+        blank=True
     )
-    author_name = models.CharField(max_length=100, blank=True)  # For external authors
-    author_email = models.EmailField(blank=True)  # For external authors
+    team_goals = models.JSONField(default=dict, blank=True)
     
-    # Email Integration
-    email_message_id = models.CharField(max_length=255, blank=True)
-    in_reply_to = models.CharField(max_length=255, blank=True)
+    # Performance Metrics
+    current_revenue = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=Decimal('0.00')
+    )
+    ytd_revenue = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        default=Decimal('0.00')
+    )
     
-    # Visibility & Access
-    is_public = models.BooleanField(default=True)
-    is_customer_visible = models.BooleanField(default=True)
+    # Team Settings
+    max_team_size = models.IntegerField(null=True, blank=True)
+    auto_assign_leads = models.BooleanField(default=False)
+    shared_commission_pool = models.BooleanField(default=False)
+    requires_approval_to_join = models.BooleanField(default=True)
     
-    # Attachments
-    attachments = models.JSONField(default=list)
+    # Collaboration
+    slack_channel = models.CharField(max_length=100, blank=True)
+    email_list = models.EmailField(blank=True)
+    meeting_schedule = models.JSONField(default=dict, blank=True)
     
-    # Time Tracking
-    time_spent_minutes = models.IntegerField(null=True, blank=True)
-    billable_time = models.BooleanField(default=False)
-    
-    # Status Changes
-    status_change_from = models.CharField(max_length=15, blank=True)
-    status_change_to = models.CharField(max_length=15, blank=True)
+    # Location & Timezone
+    primary_location = models.CharField(max_length=200, blank=True)
+    timezone = models.CharField(max_length=50, default='UTC')
     
     class Meta:
-        ordering = ['created_at']
-        indexes = [
-            models.Index(fields=['tenant', 'ticket', 'comment_type']),
-            models.Index(fields=['tenant', 'author']),
-            models.Index(fields=['tenant', 'created_at']),
-        ]
-        
-    def __str__(self):
-        author = self.author.get_full_name() if self.author else self.author_name
-        return f'Comment by {author} on {self.ticket.ticket_number}'
-    
-    def save(self, *args, **kwargs):
-        # Set author name for display
-        if self.author and not self.author_name:
-            self.author_name = self.author.get_full_name()
-        
-        super().save(*args, **kwargs)
-        
-        # Update ticket's last activity
-        self.ticket.updated_at = self.created_at
-        self.ticket.save(update_fields=['updated_at'])
-
-
-class KnowledgeBase(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced knowledge base for customer self-service"""
-    
-    CONTENT_TYPES = [
-        ('ARTICLE', 'Article'),
-        ('FAQ', 'FAQ'),
-        ('HOW_TO', 'How-to Guide'),
-        ('TROUBLESHOOTING', 'Troubleshooting'),
-        ('VIDEO', 'Video Tutorial'),
-        ('DOCUMENT', 'Document'),
-    ]
-    
-    STATUS_CHOICES = [
-        ('DRAFT', 'Draft'),
-        ('REVIEW', 'Under Review'),
-        ('PUBLISHED', 'Published'),
-        ('ARCHIVED', 'Archived'),
-    ]
-    
-    # Content Information
-    title = models.CharField(max_length=255)
-    slug = models.SlugField(max_length=255, blank=True)
-    content = models.TextField()
-    excerpt = models.TextField(blank=True)
-    content_type = models.CharField(max_length=20, choices=CONTENT_TYPES, default='ARTICLE')
-    
-    # Categorization
-    category = models.ForeignKey(
-        TicketCategory,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='knowledge_articles'
-    )
-    tags = models.JSONField(default=list)
-    
-    # Status & Publishing
-    status = models.CharField(max_length=15, choices=STATUS_CHOICES, default='DRAFT')
-    published_date = models.DateTimeField(null=True, blank=True)
-    
-    # Authoring
-    author = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='authored_kb_articles'
-    )
-    reviewer = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='reviewed_kb_articles'
-    )
-    reviewed_date = models.DateTimeField(null=True, blank=True)
-    
-    # SEO & Search
-    meta_description = models.CharField(max_length=160, blank=True)
-    meta_keywords = models.CharField(max_length=255, blank=True)
-    search_keywords = models.JSONField(default=list)
-    
-    # Usage Analytics
-    view_count = models.IntegerField(default=0)
-    helpful_votes = models.IntegerField(default=0)
-    unhelpful_votes = models.IntegerField(default=0)
-    last_viewed = models.DateTimeField(null=True, blank=True)
-    
-    # Related Content
-    related_articles = models.ManyToManyField(
-        'self',
-        blank=True,
-        symmetrical=False
-    )
-    related_tickets = models.ManyToManyField(
-        Ticket,
-        blank=True,
-        related_name='related_kb_articles'
-    )
-    
-    # External Links
-    external_url = models.URLField(blank=True)
-    video_url = models.URLField(blank=True)
-    
-    # Attachments
-    attachments = models.JSONField(default=list)
-    
-    # Access Control
-    is_public = models.BooleanField(default=True)
-    customer_visible = models.BooleanField(default=True)
-    internal_only = models.BooleanField(default=False)
-    
-    # Maintenance
-    last_reviewed = models.DateTimeField(null=True, blank=True)
-    review_required = models.BooleanField(default=False)
-    
-    class Meta:
-        ordering = ['-created_at']
-        verbose_name = 'Knowledge Base Article'
-        verbose_name_plural = 'Knowledge Base Articles'
-        indexes = [
-            models.Index(fields=['tenant', 'status', 'content_type']),
-            models.Index(fields=['tenant', 'category']),
-            models.Index(fields=['tenant', 'published_date']),
-            models.Index(fields=['tenant', 'view_count']),
-        ]
+        ordering = ['level', 'name']
+        verbose_name = 'Team'
+        verbose_name_plural = 'Teams'
         constraints = [
             models.UniqueConstraint(
-                fields=['tenant', 'slug'],
-                name='unique_tenant_kb_slug',
-                condition=models.Q(slug__isnull=False)
+                fields=['tenant', 'code'],
+                name='unique_team_code_per_tenant'
             ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant', 'status', 'team_type']),
+            models.Index(fields=['tenant', 'team_lead']),
+            models.Index(fields=['tenant', 'parent_team']),
         ]
         
     def __str__(self):
-        return self.title
+        return f"{self.code} - {self.name}"
     
     def save(self, *args, **kwargs):
-        if not self.slug:
-            from django.utils.text import slugify
-            self.slug = slugify(self.title)
-        
-        # Set published date when status changes to published
-        if self.status == 'PUBLISHED' and not self.published_date:
-            self.published_date = timezone.now()
-        
+        # Calculate hierarchy level
+        if self.parent_team:
+            self.level = self.parent_team.level + 1
+        else:
+            self.level = 0
         super().save(*args, **kwargs)
     
     @property
-    def helpfulness_ratio(self):
-        """Calculate helpfulness ratio"""
-        total_votes = self.helpful_votes + self.unhelpful_votes
-        if total_votes > 0:
-            return (self.helpful_votes / total_votes) * 100
-        return 0
+    def total_members(self):
+        """Get total number of active team members"""
+        return self.memberships.filter(is_active=True).count()
     
-    def mark_as_viewed(self):
-        """Increment view count"""
-        self.view_count += 1
-        self.last_viewed = timezone.now()
-        self.save(update_fields=['view_count', 'last_viewed'])
+    @property
+    def target_achievement_percentage(self):
+        """Calculate team target achievement percentage"""
+        if self.team_revenue_target and self.team_revenue_target > 0:
+            return (self.current_revenue / self.team_revenue_target) * 100
+        return Decimal('0.00')
+    
+    @property
+    def available_spots(self):
+        """Calculate available spots in team"""
+        if self.max_team_size:
+            return self.max_team_size - self.total_members
+        return None
+    
+    @property
+    def is_full(self):
+        """Check if team is at capacity"""
+        if self.max_team_size:
+            return self.total_members >= self.max_team_size
+        return False
+    
+    def get_all_members(self):
+        """Get all active team members"""
+        return User.objects.filter(
+            team_memberships__team=self,
+            team_memberships__is_active=True
+        ).distinct()
+    
+    def get_members_by_role(self, role):
+        """Get team members by specific role"""
+        return User.objects.filter(
+            team_memberships__team=self,
+            team_memberships__role=role,
+            team_memberships__is_active=True
+        ).distinct()
+    
+    def add_member(self, user, role='MEMBER', assigned_by=None):
+        """Add a new member to the team"""
+        if self.is_full:
+            raise ValueError("Team is at maximum capacity")
+        
+        membership, created = TeamMembership.objects.get_or_create(
+            tenant=self.tenant,
+            team=self,
+            user=user,
+            defaults={
+                'role': role,
+                'assigned_by': assigned_by,
+                'is_active': True,
+                'join_date': timezone.now().date()
+            }
+        )
+        
+        if not created and not membership.is_active:
+            membership.is_active = True
+            membership.rejoin_date = timezone.now().date()
+            membership.save()
+        
+        return membership
+
+
+class TeamMembership(TenantBaseModel):
+    """Team member assignments with roles and permissions"""
+    
+    MEMBERSHIP_ROLES = [
+        ('LEADER', 'Team Leader'),
+        ('SENIOR', 'Senior Member'),
+        ('MEMBER', 'Team Member'),
+        ('JUNIOR', 'Junior Member'),
+        ('INTERN', 'Intern'),
+        ('CONTRACTOR', 'Contractor'),
+        ('OBSERVER', 'Observer'),
+    ]
+    
+    MEMBERSHIP_STATUS = [
+        ('ACTIVE', 'Active'),
+        ('INACTIVE', 'Inactive'),
+        ('SUSPENDED', 'Suspended'),
+        ('PENDING', 'Pending Approval'),
+        ('ON_LEAVE', 'On Leave'),
+    ]
+    
+    # Core Membership
+    team = models.ForeignKey(
+        Team,
+        on_delete=models.CASCADE,
+        related_name='memberships'
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='team_memberships'
+    )
+    
+    # Membership Details
+    role = models.CharField(max_length=20, choices=MEMBERSHIP_ROLES, default='MEMBER')
+    status = models.CharField(max_length=20, choices=MEMBERSHIP_STATUS, default='ACTIVE')
+    
+    # Dates
+    join_date = models.DateField(default=timezone.now)
+    leave_date = models.DateField(null=True, blank=True)
+    rejoin_date = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+    
+    # Assignment Details
+    assigned_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='team_assignments_made'
+    )
+    assignment_reason = models.CharField(max_length=200, blank=True)
+    
+    # Permissions
+    can_view_team_data = models.BooleanField(default=True)
+    can_edit_team_settings = models.BooleanField(default=False)
+    can_add_members = models.BooleanField(default=False)
+    can_remove_members = models.BooleanField(default=False)
+    can_assign_leads = models.BooleanField(default=False)
+    can_view_team_revenue = models.BooleanField(default=True)
+    
+    # Performance & Targets
+    individual_target = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    commission_percentage = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+    
+    # Additional Information
+    notes = models.TextField(blank=True)
+    skills = models.JSONField(default=list, blank=True)
+    certifications = models.JSONField(default=list, blank=True)
+    
+    class Meta:
+        ordering = ['-join_date']
+        verbose_name = 'Team Membership'
+        verbose_name_plural = 'Team Memberships'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'team', 'user'],
+                condition=models.Q(is_active=True),
+                name='unique_active_team_membership'
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['tenant', 'team', 'is_active']),
+            models.Index(fields=['tenant', 'user', 'is_active']),
+            models.Index(fields=['tenant', 'role', 'status']),
+        ]
+        
+    def __str__(self):
+        return f"{self.user.get_full_name()} - {self.team.name} ({self.role})"
+    
+    def clean(self):
+        """Validate team membership"""
+        from django.core.exceptions import ValidationError
+        
+        if self.leave_date and self.join_date > self.leave_date:
+            raise ValidationError('Leave date cannot be before join date')
+        
+        # Check team capacity
+        if self.is_active and self.team.is_full:
+            existing_membership = TeamMembership.objects.filter(
+                team=self.team,
+                user=self.user,
+                is_active=True
+            ).exclude(pk=self.pk)
+            
+            if not existing_membership.exists():
+                raise ValidationError('Team is at maximum capacity')
+    
+    @property
+    def tenure_days(self):
+        """Calculate tenure in days"""
+        end_date = self.leave_date or timezone.now().date()
+        return (end_date - self.join_date).days
+    
+    @property
+    def is_leader(self):
+        """Check if member has leadership role"""
+        return self.role in ['LEADER', 'SENIOR']
+    
+    @property
+    def can_manage_team(self):
+        """Check if member can manage team settings"""
+        return self.can_edit_team_settings or self.role == 'LEADER'
+    
+    def deactivate_membership(self, leave_reason=None):
+        """Deactivate team membership"""
+        self.is_active = False
+        self.status = 'INACTIVE'
+        self.leave_date = timezone.now().date()
+        if leave_reason:
+            self.notes = f"{self.notes}\nLeft team: {leave_reason}".strip()
+        self.save()
+    
+    def promote_to_leader(self, promoted_by=None):
+        """Promote member to team leader"""
+        self.role = 'LEADER'
+        self.can_edit_team_settings = True
+        self.can_add_members = True
+        self.can_remove_members = True
+        self.can_assign_leads = True
+        
+        if promoted_by:
+            self.notes = f"{self.notes}\nPromoted to leader by {promoted_by.get_full_name()}".strip()
+        
+        self.save()
+        
+        # Update team leader if this is the first leader
+        if not self.team.team_lead:
+            self.team.team_lead = self.user
+            self.team.save()

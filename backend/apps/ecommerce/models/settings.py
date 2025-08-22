@@ -261,9 +261,16 @@ class EcommerceSettings(EcommerceBaseModel):
     def formatted_currency_symbol(self):
         """Get formatted currency symbol"""
         currency_symbols = {
-            'USD': ', 'EUR': '€', 'GBP': '£', 'JPY': '¥',
-            'CAD': 'C, 'AUD': 'A, 'CNY': '¥', 'INR': '₹',
-            'BRL': 'R, 'MXN': '
+            'USD': '$',
+            'EUR': '€',
+            'GBP': '£',
+            'JPY': '¥',
+            'CAD': '$',
+            'AUD': '$',
+            'CNY': '¥',
+            'INR': '₹',
+            'BRL': 'R$',
+            'MXN': '$',
         }
         return currency_symbols.get(self.default_currency, self.default_currency)
     

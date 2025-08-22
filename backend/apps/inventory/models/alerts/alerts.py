@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.core.validators import MinValueValidator
 from decimal import Decimal
-from ..abstract.base import TenantBaseModel, SoftDeleteMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
 from ..abstract.auditable import AuditableMixin
 
 User = get_user_model()

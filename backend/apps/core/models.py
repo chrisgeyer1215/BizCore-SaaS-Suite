@@ -3,6 +3,7 @@
 from django.db import models
 from django_tenants.models import TenantMixin, DomainMixin
 from django.contrib.auth.models import AbstractUser
+from django.contrib.auth import get_user_model
 import shortuuid
 from django.utils.text import slugify
 
@@ -14,6 +15,21 @@ class TenantBaseModel(models.Model):
         on_delete=models.CASCADE,
         related_name='%(app_label)s_%(class)s_set'
     )
+    created_by = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='%(app_label)s_%(class)s_created'
+    )
+    updated_by = models.ForeignKey(
+        'auth.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='%(app_label)s_%(class)s_updated'
+    )
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

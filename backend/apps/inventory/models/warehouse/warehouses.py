@@ -6,7 +6,8 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.contrib.auth import get_user_model
 from decimal import Decimal
 
-from ..abstract.base import TenantBaseModel, SoftDeleteMixin, ActivatableMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+from ..abstract.base import ActivatableMixin
 from ...managers.base import InventoryManager
 
 User = get_user_model()

@@ -9,7 +9,8 @@ from datetime import date
 
 from backend.apps.inventory.models.abstract.auditable import AuditableMixin
 
-from ..abstract.base import TenantBaseModel, SoftDeleteMixin, ActivatableMixin
+from apps.core.models import TenantBaseModel, SoftDeleteMixin
+from ..abstract.base import ActivatableMixin
 from ...managers.base import InventoryManager
 from ...managers.product import ProductManager
 
@@ -228,7 +229,6 @@ class Product(TenantBaseModel, AuditableMixin, SoftDeleteMixin):
     custom_fields = models.JSONField(default=dict, blank=True)
     internal_notes = models.TextField(blank=True)
     
-    objects = InventoryManager()
     objects = ProductManager()
     class Meta:
         db_table = 'inventory_products'
