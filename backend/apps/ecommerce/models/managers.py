@@ -5,12 +5,13 @@ Custom managers and querysets for e-commerce models
 """
 
 from django.db import models
+from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
 
 
-class PublishedProductManager(models.Manager):
-    """Manager for published products only"""
+class AIOptimizedProductManager(models.Manager):
+    """AI-optimized manager for published products with intelligent features"""
     
     def get_queryset(self):
         return super().get_queryset().filter(
@@ -18,6 +19,121 @@ class PublishedProductManager(models.Manager):
             is_published=True,
             status='PUBLISHED'
         )
+    
+    def ai_recommended(self, limit=10):
+        """Products with highest AI recommendation scores"""
+        return self.filter(
+            ai_recommended_price__isnull=False,
+            revenue_optimization_score__gt=0
+        ).order_by('-revenue_optimization_score')[:limit]
+    
+    def high_demand_forecast(self, threshold=50):
+        """Products with high demand forecast"""
+        return self.filter(demand_forecast_30d__gte=threshold).order_by('-demand_forecast_30d')
+    
+    def ai_optimized_pricing(self):
+        """Products with AI-optimized pricing enabled"""
+        return self.filter(dynamic_pricing_enabled=True, ai_recommended_price__isnull=False)
+    
+    def personalized_for_segment(self, segment_name):
+        """Products personalized for specific customer segment"""
+        return self.filter(customer_segments__contains=[{'segment': segment_name}])
+    
+    def trending_ai(self, days=7):
+        """AI-identified trending products"""
+        cutoff_date = timezone.now() - timedelta(days=days)
+        return self.filter(
+            last_ai_analysis__gte=cutoff_date,
+            trend_analysis__contains={'trend_direction': 'upward'}
+        ).order_by('-demand_forecast_30d')
+    
+    def high_conversion_potential(self, min_score=70):
+        """Products with high conversion optimization scores"""
+        return self.filter(
+            conversion_optimization_score__gte=min_score
+        ).order_by('-conversion_optimization_score')
+    
+    def smart_upsell_candidates(self):
+        """Products with high upsell potential"""
+        return self.filter(
+            upsell_opportunities__isnull=False,
+            cross_sell_potential__gt=0.5
+        ).order_by('-cross_sell_potential')
+    
+    def ai_quality_approved(self, min_score=80):
+        """Products meeting AI quality standards"""
+        return self.filter(
+            ai_content_quality_score__gte=min_score,
+            content_completeness_score__gte=min_score
+        )
+    
+    def inventory_risk_alert(self, risk_threshold=70):
+        """Products with high stockout risk"""
+        return self.filter(
+            stockout_risk_score__gte=risk_threshold,
+            track_quantity=True
+        ).order_by('-stockout_risk_score')
+    
+    def ai_search_optimized(self):
+        """Products optimized for search"""
+        return self.filter(
+            search_relevance_score__gt=70,
+            discoverability_score__gt=60,
+            ai_keywords__isnull=False
+        ).order_by('-search_relevance_score')
+    
+    def seasonal_opportunities(self):
+        """Products with seasonal demand patterns"""
+        return self.filter(
+            seasonal_demand_pattern__isnull=False,
+            seasonal_demand_pattern__contains={'is_seasonal': True}
+        )
+    
+    def low_engagement_risk(self, max_engagement=40):
+        """Products with low engagement predictions"""
+        return self.filter(
+            engagement_prediction__lte=max_engagement,
+            churn_risk_score__gte=50
+        ).order_by('-churn_risk_score')
+    
+    def ai_bundle_compatible(self, min_score=0.7):
+        """Products suitable for bundling"""
+        return self.filter(
+            bundle_compatibility_score__gte=min_score
+        ).order_by('-bundle_compatibility_score')
+    
+    def ml_insights_available(self):
+        """Products with ML model predictions"""
+        return self.filter(
+            ml_model_predictions__isnull=False,
+            ai_confidence_scores__isnull=False,
+            last_ai_analysis__isnull=False
+        )
+    
+    def performance_leaders(self, metric='revenue_optimization_score'):
+        """Top performing products by AI metric"""
+        return self.filter(
+            **{f'{metric}__gt': 0}
+        ).order_by(f'-{metric}')[:20]
+    
+    def needs_ai_analysis(self, hours=24):
+        """Products needing AI analysis update"""
+        cutoff_time = timezone.now() - timedelta(hours=hours)
+        return self.filter(
+            models.Q(last_ai_analysis__isnull=True) |
+            models.Q(last_ai_analysis__lt=cutoff_time)
+        )
+    
+    def smart_recommendations_for(self, product_id, limit=5):
+        """Get AI recommendations for a specific product"""
+        return self.filter(
+            ai_recommendations_received__source_product_id=product_id,
+            ai_recommendations_received__is_active=True
+        ).order_by('-ai_recommendations_received__confidence_score')[:limit]
+
+class PublishedProductManager(AIOptimizedProductManager):
+    """Manager for published products only - extends AI-optimized manager"""
+    pass
     
     def in_stock(self):
         """Products that are in stock"""
@@ -203,9 +319,9 @@ class DiscountManager(models.Manager):
         """Active discounts"""
         now = timezone.now()
         return self.filter(
+            models.Q(ends_at__isnull=True) | models.Q(ends_at__gte=now),
             is_active=True,
-            starts_at__lte=now,
-            models.Q(ends_at__isnull=True) | models.Q(ends_at__gte=now)
+            starts_at__lte=now
         )
     
     def expired(self):
@@ -419,8 +535,9 @@ class GiftCardManager(models.Manager):
         now = timezone.now()
         return self.filter(
             is_active=True,
-            models.Q(expires_at__isnull=True) | models.Q(expires_at__gte=now),
             balance__gt=0
+        ).filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gte=now)
         )
     
     def expired(self):

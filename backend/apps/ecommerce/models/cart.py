@@ -205,7 +205,12 @@ class IntelligentCart(EcommerceBaseModel, CartAIMixin):
             raise ValidationError("Cannot add items to inactive cart")
         
         # Record interaction for behavioral analysis
-        self.record_interaction('add_item', {\n            'product_id': str(product.id),\n            'variant_id': str(variant.id) if variant else None,\n            'quantity': quantity,\n            'timestamp': timezone.now().isoformat()\n        })
+        self.record_interaction('add_item', {
+            'product_id': str(product.id),
+            'variant_id': str(variant.id) if variant else None,
+            'quantity': quantity,
+            'timestamp': timezone.now().isoformat()
+        })
         
         # AI-powered price optimization
         optimized_price = custom_price
@@ -905,7 +910,7 @@ class CartAbandonmentEvent(EcommerceBaseModel):
         UNKNOWN = 'UNKNOWN', 'Unknown'
     
     cart = models.ForeignKey(
-        Cart, 
+        'IntelligentCart', 
         on_delete=models.CASCADE, 
         related_name='abandonment_events'
     )
@@ -967,7 +972,7 @@ class CartShare(EcommerceBaseModel):
         FULL_ACCESS = 'FULL_ACCESS', 'Full Access'
     
     cart = models.ForeignKey(
-        Cart, 
+        'IntelligentCart', 
         on_delete=models.CASCADE, 
         related_name='shares'
     )

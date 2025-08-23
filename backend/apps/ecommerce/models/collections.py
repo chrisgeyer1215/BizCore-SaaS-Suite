@@ -155,7 +155,7 @@ class IntelligentCollection(EcommerceBaseModel, SEOMixin, VisibilityMixin, Sorta
         db_table = 'ecommerce_collections'
         ordering = ['display_order', 'title']
         indexes = [
-            models.Index(fields=['tenant', 'is_visible', 'is_featured']),
+            models.Index(fields=['tenant', 'is_published', 'is_featured']),
             models.Index(fields=['tenant', 'collection_type']),
             models.Index(fields=['tenant', 'parent']),
             models.Index(fields=['tenant', 'handle']),
@@ -487,7 +487,7 @@ class CollectionProduct(EcommerceBaseModel):
     """Through model for collection-product relationship with enhanced features"""
     
     collection = models.ForeignKey(
-        Collection, 
+        'IntelligentCollection', 
         on_delete=models.CASCADE,
         related_name='collection_products'
     )
@@ -586,7 +586,7 @@ class CollectionRule(EcommerceBaseModel):
         OR = 'OR', 'OR'
     
     collection = models.ForeignKey(
-        Collection,
+        'IntelligentCollection',
         on_delete=models.CASCADE,
         related_name='rules'
     )
@@ -681,7 +681,7 @@ class CollectionImage(EcommerceBaseModel):
     """Additional images for collections"""
     
     collection = models.ForeignKey(
-        Collection,
+        'IntelligentCollection',
         on_delete=models.CASCADE,
         related_name='images'
     )
@@ -719,7 +719,7 @@ class CollectionSEO(EcommerceBaseModel):
     """Extended SEO settings for collections"""
     
     collection = models.OneToOneField(
-        Collection,
+        'IntelligentCollection',
         on_delete=models.CASCADE,
         related_name='seo_extended'
     )
@@ -803,7 +803,7 @@ class CollectionMetrics(EcommerceBaseModel):
     """Performance metrics for collections"""
     
     collection = models.OneToOneField(
-        Collection,
+        'IntelligentCollection',
         on_delete=models.CASCADE,
         related_name='metrics'
     )

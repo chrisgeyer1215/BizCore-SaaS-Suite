@@ -1,550 +1,492 @@
-# ============================================================================
-# backend/apps/crm/tasks/email_tasks.py - Email Campaign and Communication Tasks
-# ============================================================================
+"""
+Email Processing Tasks
+Handle email sending, campaign delivery, and email analytics
+"""
 
-from celery import group, chain, chord
-from typing import Dict, List, Any, Optional
+from celery import shared_task
 from django.core.mail import send_mail, send_mass_mail
-from django.template import Template, Context
+from django.template.loader import render_to_string
 from django.utils import timezone
-from datetime import timedelta
+from django.db import transaction
+from django.conf import settings
 import logging
+from typing import List, Dict, Any
+import time
 
-from apps.core.celery import app
-from .base import AuditableTask
-from ..models import Campaign, Lead, Account, Contact, EmailTemplate, EmailLog
-from ..services.campaign_service import CampaignService
-from ..services.activity_service import ActivityService
+from .base import TenantAwareTask, BatchProcessingTask, MonitoredTask
+from ..models import (
+    EmailTemplate, EmailLog, Campaign, CampaignMember, 
+    Lead, Contact, Activity, EmailBounce
+)
+from ..services.email_service import EmailService
+from ..utils.tenant_utils import get_tenant_by_id
 
 logger = logging.getLogger(__name__)
 
 
-@app.task(base=AuditableTask, bind=True)
-def send_email_campaign(self, campaign_id: int, recipient_batch: List[int], 
-                       security_context: Dict):
+@shared_task(base=MonitoredTask, bind=True)
+def send_email_task(self, recipient_email, subject, message, template_id=None, 
+                   context=None, tenant_id=None, sender_id=None):
     """
-    Send email campaign to a batch of recipients with personalization and tracking
-    
-    Args:
-        campaign_id: Campaign ID
-        recipient_batch: List of recipient IDs
-        security_context: Security context for permission validation
+    Send individual email
     """
     try:
-        # Initialize services with security context
-        campaign_service = CampaignService(
-            tenant_id=security_context['tenant_id'],
-            user_id=security_context['user_id']
+        tenant = get_tenant_by_id(tenant_id) if tenant_id else None
+        service = EmailService(tenant=tenant)
+        
+        result = service.send_email(
+            to_email=recipient_email,
+            subject=subject,
+            message=message,
+            template_id=template_id,
+            context=context or {},
+            sender_id=sender_id
         )
         
-        # Get campaign details
-        campaign = Campaign.objects.get(id=campaign_id, tenant_id=security_context['tenant_id'])
+        logger.info(f"Email sent successfully to {recipient_email}")
+        return {
+            'status': 'sent',
+            'recipient': recipient_email,
+            'email_id': result.get('email_id'),
+            'message_id': result.get('message_id')
+        }
         
-        if not campaign.is_active:
-            return {'error': 'Campaign is not active', 'sent_count': 0}
-        
-        # Get email template
-        email_template = campaign.email_template
-        if not email_template:
-            return {'error': 'No email template configured', 'sent_count': 0}
-        
-        # Process recipients in batch
-        sent_count = 0
-        failed_count = 0
+    except Exception as e:
+        logger.error(f"Failed to send email to {recipient_email}: {e}")
+        raise
+
+
+@shared_task(base=BatchProcessingTask, bind=True)
+def send_bulk_emails_task(self, email_data_list, tenant_id, sender_id=None, 
+                         batch_size=50, delay_between_batches=1):
+    """
+    Send bulk emails with throttling and error handling
+    
+    email_data_list format:
+    [
+        {
+            'recipient': 'email@example.com',
+            'subject': 'Subject',
+            'message': 'Message',
+            'template_id': 1,
+            'context': {...}
+        },
+        ...
+    ]
+    """
+    tenant = get_tenant_by_id(tenant_id)
+    service = EmailService(tenant=tenant)
+    
+    def process_email_batch(batch):
+        """Process a batch of emails"""
         results = []
         
-        for recipient_id in recipient_batch:
+        for email_data in batch:
             try:
-                # Get recipient (could be Lead, Account, or Contact)
-                recipient = self._get_recipient(recipient_id, campaign.target_audience)
-                
-                if not recipient or not getattr(recipient, 'email', None):
-                    failed_count += 1
-                    continue
-                
-                # Personalize email content
-                personalized_content = self._personalize_email_content(
-                    email_template, recipient, campaign
+                result = service.send_email(
+                    to_email=email_data['recipient'],
+                    subject=email_data['subject'],
+                    message=email_data.get('message', ''),
+                    template_id=email_data.get('template_id'),
+                    context=email_data.get('context', {}),
+                    sender_id=sender_id
                 )
                 
-                # Send email
-                success = self._send_single_campaign_email(
-                    recipient.email,
-                    personalized_content['subject'],
-                    personalized_content['content'],
-                    campaign,
-                    recipient
-                )
-                
-                if success:
-                    sent_count += 1
-                    
-                    # Log email activity
-                    self._log_email_activity(campaign, recipient, 'sent')
-                    
-                    # Update campaign statistics
-                    self._update_campaign_stats(campaign_id, 'sent')
-                else:
-                    failed_count += 1
-                    
                 results.append({
-                    'recipient_id': recipient_id,
-                    'email': recipient.email,
-                    'status': 'sent' if success else 'failed'
+                    'recipient': email_data['recipient'],
+                    'status': 'sent',
+                    'email_id': result.get('email_id')
                 })
                 
             except Exception as e:
-                logger.error(f"Failed to send email to recipient {recipient_id}: {e}")
-                failed_count += 1
+                logger.error(f"Failed to send email to {email_data['recipient']}: {e}")
                 results.append({
-                    'recipient_id': recipient_id,
+                    'recipient': email_data['recipient'],
                     'status': 'failed',
                     'error': str(e)
                 })
         
-        # Update campaign status
-        if sent_count > 0:
-            campaign_service.update_campaign_execution_status(
-                campaign_id, f"Batch processed: {sent_count} sent, {failed_count} failed"
-            )
+        # Throttling delay between batches
+        if delay_between_batches > 0:
+            time.sleep(delay_between_batches)
         
-        return {
-            'campaign_id': campaign_id,
-            'batch_size': len(recipient_batch),
-            'sent_count': sent_count,
-            'failed_count': failed_count,
-            'results': results,
-            'completed_at': timezone.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Email campaign batch failed: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'campaign_id': campaign_id,
-            'sent_count': 0,
-            'failed_count': len(recipient_batch)
-        }
+        return results
     
-    def _get_recipient(self, recipient_id: int, target_audience: str):
-        """Get recipient object based on target audience type"""
-        try:
-            if target_audience == 'LEADS':
-                return Lead.objects.filter(id=recipient_id, tenant_id=self.tenant_id).first()
-            elif target_audience == 'ACCOUNTS':
-                return Account.objects.filter(id=recipient_id, tenant_id=self.tenant_id).first()
-            elif target_audience == 'CONTACTS':
-                return Contact.objects.filter(id=recipient_id, tenant_id=self.tenant_id).first()
-            return None
-            
-        except Exception as e:
-            logger.error(f"Failed to get recipient {recipient_id}: {e}")
-            return None
-    
-    def _personalize_email_content(self, template: EmailTemplate, recipient, campaign: Campaign) -> Dict:
-        """Personalize email content with recipient data"""
-        try:
-            # Create context for template rendering
-            context = {
-                'recipient': recipient,
-                'campaign': campaign,
-                'company_name': self.tenant.name if self.tenant else 'Our Company',
-                'current_date': timezone.now().strftime('%B %d, %Y'),
-                'unsubscribe_url': self._generate_unsubscribe_url(recipient, campaign)
-            }
-            
-            # Add recipient-specific context
-            if hasattr(recipient, 'first_name'):
-                context['first_name'] = recipient.first_name or 'Valued Customer'
-            if hasattr(recipient, 'company'):
-                context['company'] = recipient.company
-            
-            # Render subject and content
-            subject_template = Template(template.subject)
-            content_template = Template(template.content)
-            
-            personalized_subject = subject_template.render(Context(context))
-            personalized_content = content_template.render(Context(context))
-            
-            return {
-                'subject': personalized_subject,
-                'content': personalized_content,
-                'context': context
-            }
-            
-        except Exception as e:
-            logger.error(f"Email personalization failed: {e}")
-            return {
-                'subject': template.subject,
-                'content': template.content
-            }
+    # Process in batches
+    return self.process_in_batches(
+        email_data_list,
+        batch_size=batch_size,
+        process_func=process_email_batch
+    )
 
 
-@app.task(base=AuditableTask, bind=True)
-def send_email_sequence(self, sequence_config: Dict, target_list: List[int], 
-                       security_context: Dict):
+@shared_task(base=TenantAwareTask, bind=True)
+def send_campaign_emails_task(self, campaign_id, tenant_id, batch_size=100):
     """
-    Send automated email sequence (drip campaign) to target list
-    
-    Args:
-        sequence_config: Email sequence configuration
-        target_list: List of target recipient IDs
-        security_context: Security context
+    Send emails for marketing campaign
     """
     try:
-        sequence_name = sequence_config['name']
-        emails = sequence_config['emails']  # List of email configs with delays
+        tenant = get_tenant_by_id(tenant_id)
+        campaign = Campaign.objects.get(id=campaign_id, tenant=tenant)
         
-        # Create workflow for email sequence
-        email_tasks = []
+        # Get campaign members who haven't received emails yet
+        members = CampaignMember.objects.filter(
+            campaign=campaign,
+            email_sent=False,
+            is_active=True
+        )[:batch_size]
         
-        for i, email_config in enumerate(emails):
-            delay_hours = email_config.get('delay_hours', 0)
-            
-            # Schedule email task with delay
-            if delay_hours > 0:
-                eta = timezone.now() + timedelta(hours=delay_hours)
-                email_task = send_single_email.apply_async(
-                    args=[email_config, target_list, security_context],
-                    eta=eta
-                )
-            else:
-                email_task = send_single_email.delay(
-                    email_config, target_list, security_context
-                )
-            
-            email_tasks.append(email_task.id)
+        if not members.exists():
+            logger.info(f"No pending emails for campaign {campaign.name}")
+            return {'status': 'completed', 'sent_count': 0}
         
-        return {
-            'sequence_name': sequence_name,
-            'target_count': len(target_list),
-            'emails_scheduled': len(emails),
-            'task_ids': email_tasks,
-            'started_at': timezone.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Email sequence setup failed: {e}", exc_info=True)
-        return {'error': str(e), 'sequence_name': sequence_config.get('name', 'unknown')}
-
-
-@app.task(base=AuditableTask, bind=True)
-def process_email_bounce
-    """
-    Process email bounce notification and update recipient status
-    
-    Args:: Security context
-    """
-    try:
-        email_address = bounce_data.get('email')
-        bounce_type = bounce_data.get('type', 'hard')  # hard, soft, complaint
-        bounce_reason = bounce_data.get('reason', '')
-        
-        if not email_address:
-            return {'error': 'No email address in bounce data'}
-        
-        # Find all records with this email address
-        bounced_records = []
-        
-        # Check Leads
-        leads = Lead.objects.filter(
-            email=email_address, 
-            tenant_id=security_context['tenant_id']
-        )
-        for lead in leads:
-            self._handle_email_bounce(lead, bounce_type, bounce_reason)
-            bounced_records.append({'type': 'Lead', 'id': lead.id})
-        
-        # Check Contacts
-        contacts = Contact.objects.filter(
-            email=email_address,
-            tenant_id=security_context['tenant_id']
-        )
-        for contact in contacts:
-            self._handle_email_bounce(contact, bounce_type, bounce_reason)
-            bounced_records.append({'type': 'Contact', 'id': contact.id})
-        
-        # Update EmailLog records
-        EmailLog.objects.filter(
-            recipient_email=email_address,
-            tenant_id=security_context['tenant_id']
-        ).update(
-            status='bounced',
-            bounce_type=bounce_type,
-            bounce_reason=bounce_reason,
-            bounced_at=timezone.now()
-        )
-        
-        return {
-            'email': email_address,
-            'bounce_type': bounce_type,
-            'records_updated': len(bounced_records),
-            'bounced_records': bounced_records,
-            'processed_at': timezone.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"Email bounce processing failed: {e}", exc_info=True)
-        return {'error': str(e), 'email': bounce_data.get('email')}
-    
-    def _handle_email_bounce(self, record, bounce_type: str, reason: str):
-        """Handle email bounce for individual record"""
-        try:
-            if bounce_type == 'hard':
-                # Hard bounce - mark email as invalid
-                record.email_status = 'invalid'
-                record.email_bounce_count = getattr(record, 'email_bounce_count', 0) + 1
-            elif bounce_type == 'soft':
-                # Soft bounce - increment bounce count
-                bounce_count = getattr(record, 'email_bounce_count', 0) + 1
-                record.email_bounce_count = bounce_count
-                
-                # If too many soft bounces, treat as hard bounce
-                if bounce_count >= 3:
-                    record.email_status = 'invalid'
-            elif bounce_type == 'complaint':
-                # Spam complaint - mark for suppression
-                record.email_status = 'suppressed'
-                record.unsubscribed_at = timezone.now()
-            
-            record.last_bounce_date = timezone.now()
-            record.last_bounce_reason = reason
-            record.save()
-            
-        except Exception as e:
-            logger.error(f"Individual bounce handling failed: {e}")
-
-
-@app.task(base=AuditableTask, bind=True)
-def send_single_email(self, email_config: Dict, recipients: List[int], 
-                     security_context: Dict):
-    """
-    Send single email to list of recipients
-    
-    Args:
-        email_config: Email configuration (subject, content, template_id)
-        recipients: List of recipient IDs
-        security_context: Security context
-    """
-    try:
+        service = EmailService(tenant=tenant)
         sent_count = 0
         failed_count = 0
         
-        # Get email template if specified
-        template = None
-        if email_config.get('template_id'):
-            template = EmailTemplate.objects.filter(
-                id=email_config['template_id'],
-                tenant_id=security_context['tenant_id']
-            ).first()
-        
-        for recipient_id in recipients:
+        for member in members:
             try:
-                # Get recipient
-                recipient = self._get_recipient(recipient_id, email_config.get('audience_type', 'LEADS'))
-                
-                if not recipient or not getattr(recipient, 'email', None):
-                    failed_count += 1
-                    continue
-                
-                # Prepare email content
-                if template:
-                    personalized = self._personalize_email_content(template, recipient, None)
-                    subject = personalized['subject']
-                    content = personalized['content']
-                else:
-                    subject = email_config['subject']
-                    content = email_config['content']
+                # Prepare email context
+                context = {
+                    'first_name': member.contact.first_name if hasattr(member, 'contact') else '',
+                    'last_name': member.contact.last_name if hasattr(member, 'contact') else '',
+                    'company': member.contact.company if hasattr(member, 'contact') else '',
+                    'campaign_name': campaign.name,
+                    'unsubscribe_url': service.generate_unsubscribe_url(member),
+                    **campaign.email_context
+                }
                 
                 # Send email
-                success = send_mail(
-                    subject=subject,
-                    message=content,
-                    from_email=None,  # Use default
-                    recipient_list=[recipient.email],
-                    fail_silently=False,
-                    html_message=content if '<html>' in content.lower() else None
+                result = service.send_campaign_email(
+                    campaign=campaign,
+                    member=member,
+                    context=context
                 )
                 
-                if success:
-                    sent_count += 1
-                    
-                    # Log email
-                    EmailLog.objects.create(
-                        recipient_email=recipient.email,
-                        subject=subject,
-                        status='sent',
-                        sent_at=timezone.now(),
-                        tenant_id=security_context['tenant_id'],
-                        user_id=security_context['user_id']
-                    )
-                else:
-                    failed_count += 1
-                    
+                # Mark as sent
+                member.email_sent = True
+                member.email_sent_at = timezone.now()
+                member.save(update_fields=['email_sent', 'email_sent_at'])
+                
+                sent_count += 1
+                
             except Exception as e:
-                logger.error(f"Failed to send email to {recipient_id}: {e}")
+                logger.error(f"Failed to send campaign email to member {member.id}: {e}")
                 failed_count += 1
         
+        # Update campaign statistics
+        campaign.emails_sent = (campaign.emails_sent or 0) + sent_count
+        campaign.save(update_fields=['emails_sent'])
+        
+        logger.info(f"Campaign {campaign.name}: sent {sent_count}, failed {failed_count}")
+        
+        # Schedule next batch if there are more members
+        remaining_members = CampaignMember.objects.filter(
+            campaign=campaign,
+            email_sent=False,
+            is_active=True
+        ).count()
+        
+        if remaining_members > 0:
+            # Schedule next batch with delay
+            send_campaign_emails_task.apply_async(
+                args=[campaign_id, tenant_id, batch_size],
+                countdown=60  # 1 minute delay between batches
+            )
+        
         return {
-            'recipients_count': len(recipients),
+            'status': 'batch_completed',
             'sent_count': sent_count,
             'failed_count': failed_count,
-            'completed_at': timezone.now().isoformat()
+            'remaining_members': remaining_members
         }
         
     except Exception as e:
-        logger.error(f"Single email send failed: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'sent_count': 0,
-            'failed_count': len(recipients)
-        }
+        logger.error(f"Campaign email task failed: {e}")
+        raise
 
 
-@app.task(base=AuditableTask, bind=True)
-def send_email_notification(self, notification_config: Dict, security_context: Dict):
+@shared_task(base=TenantAwareTask, bind=True)
+def process_email_bounces_task(self, tenant_id=None):
     """
-    Send system email notifications (alerts, reminders, etc.)
-    
-    Args:
-        notification_config: Notification configuration
-        security_context: Security context
+    Process email bounces and update contact status
     """
     try:
-        notification_type = notification_config['type']
-        recipients = notification_config['recipients']  # List of email addresses
-        subject = notification_config['subject']
-        content = notification_config['content']
-        priority = notification_config.get('priority', 'normal')
+        tenant = get_tenant_by_id(tenant_id) if tenant_id else None
+        service = EmailService(tenant=tenant)
         
-        # Add system context to content
-        enhanced_content = self._add_system_context(content, security_context)
+        # Get unprocessed bounces
+        bounces = EmailBounce.objects.filter(
+            tenant=tenant,
+            processed=False
+        )[:1000]  # Process up to 1000 at a time
         
-        # Send notification
-        success_count = 0
-        for recipient_email in recipients:
+        processed_count = 0
+        
+        for bounce in bounces:
             try:
-                send_mail(
-                    subject=f"[CRM] {subject}",
-                    message=enhanced_content,
-                    from_email=None,
-                    recipient_list=[recipient_email],
-                    fail_silently=False
-                )
-                success_count += 1
+                service.process_email_bounce(bounce)
+                processed_count += 1
+            except Exception as e:
+                logger.error(f"Failed to process bounce {bounce.id}: {e}")
+        
+        logger.info(f"Processed {processed_count} email bounces")
+        
+        return {
+            'status': 'completed',
+            'processed_count': processed_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Email bounce processing failed: {e}")
+        raise
+
+
+@shared_task(base=TenantAwareTask, bind=True)
+def process_email_replies_task(self, tenant_id=None):
+    """
+    Process inbound email replies and create activities
+    """
+    try:
+        tenant = get_tenant_by_id(tenant_id) if tenant_id else None
+        service = EmailService(tenant=tenant)
+        
+        # This would integrate with email service provider APIs
+        # to fetch and process inbound emails
+        
+        replies = service.fetch_email_replies()
+        processed_count = 0
+        
+        for reply in replies:
+            try:
+                # Create activity for email reply
+                activity = service.create_activity_from_email_reply(reply)
+                processed_count += 1
                 
-                # Log notification
-                EmailLog.objects.create(
-                    recipient_email=recipient_email,
-                    subject=subject,
-                    status='sent',
-                    email_type='notification',
-                    priority=priority,
-                    sent_at=timezone.now(),
-                    tenant_id=security_context['tenant_id'],
-                    user_id=security_context['user_id']
-                )
+                logger.info(f"Created activity {activity.id} from email reply")
                 
             except Exception as e:
-                logger.error(f"Failed to send notification to {recipient_email}: {e}")
+                logger.error(f"Failed to process email reply: {e}")
         
         return {
-            'notification_type': notification_type,
-            'recipients_count': len(recipients),
-            'success_count': success_count,
-            'failed_count': len(recipients) - success_count,
-            'sent_at': timezone.now().isoformat()
+            'status': 'completed',
+            'processed_count': processed_count
         }
         
     except Exception as e:
-        logger.error(f"Email notification failed: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'notification_type': notification_config.get('type', 'unknown')
-        }
-    
-    def _add_system_context(self, content: str, security_context: Dict) -> str:
-        """Add system context to notification content"""
-        try:
-            system_footer = f"""
-
----
-System Information:
-- Tenant: {self.tenant.name if self.tenant else 'Unknown'}
-- Time: {timezone.now().strftime('%Y-%m-%d %H:%M:%S UTC')}
-- User: {self.user.get_full_name() if self.user else 'System'}
-
-This is an automated notification from the CRM system.
-"""
-            
-            return content + system_footer
-            
-        except Exception as e:
-            logger.error(f"System context addition failed: {e}")
-            return content
+        logger.error(f"Email reply processing failed: {e}")
+        raise
 
 
-# Workflow tasks for complex email campaigns
-@app.task(base=AuditableTask, bind=True)
-def execute_email_campaign_workflow(self, campaign_id: int, security_context: Dict):
+@shared_task(base=TenantAwareTask, bind=True)
+def send_activity_reminder_emails_task(self, tenant_id, reminder_type='due_today'):
     """
-    Execute complete email campaign workflow with batching and monitoring
-    
-    Args:
-        campaign_id: Campaign ID
-        security_context: Security context
+    Send reminder emails for activities
     """
     try:
-        # Get campaign and validate
-        campaign = Campaign.objects.get(id=campaign_id, tenant_id=security_context['tenant_id'])
+        tenant = get_tenant_by_id(tenant_id)
+        service = EmailService(tenant=tenant)
         
-        if not campaign.is_active:
-            return {'error': 'Campaign is not active'}
+        # Get activities needing reminders
+        if reminder_type == 'due_today':
+            activities = Activity.objects.filter(
+                tenant=tenant,
+                due_date__date=timezone.now().date(),
+                status__in=['pending', 'open'],
+                reminder_sent=False
+            )
+        elif reminder_type == 'overdue':
+            activities = Activity.objects.filter(
+                tenant=tenant,
+                due_date__lt=timezone.now(),
+                status__in=['pending', 'open'],
+                reminder_sent=False
+            )
+        else:
+            activities = Activity.objects.none()
         
-        # Get target audience
-        campaign_service = CampaignService(
-            tenant_id=security_context['tenant_id'],
-            user_id=security_context['user_id']
-        )
+        sent_count = 0
         
-        target_recipients = campaign_service.get_campaign_recipients(campaign_id)
+        for activity in activities:
+            try:
+                if activity.assigned_to and activity.assigned_to.email:
+                    context = {
+                        'activity': activity,
+                        'user_name': activity.assigned_to.get_full_name(),
+                        'due_date': activity.due_date,
+                        'activity_url': f"{settings.FRONTEND_URL}/activities/{activity.id}"
+                    }
+                    
+                    service.send_template_email(
+                        template_name='activity_reminder',
+                        to_email=activity.assigned_to.email,
+                        context=context
+                    )
+                    
+                    # Mark reminder as sent
+                    activity.reminder_sent = True
+                    activity.save(update_fields=['reminder_sent'])
+                    
+                    sent_count += 1
+                    
+            except Exception as e:
+                logger.error(f"Failed to send reminder for activity {activity.id}: {e}")
         
-        if not target_recipients:
-            return {'error': 'No recipients found for campaign'}
-        
-        # Batch recipients for processing
-        batch_size = 50  # Process in batches of 50
-        recipient_batches = [
-            target_recipients[i:i + batch_size] 
-            for i in range(0, len(target_recipients), batch_size)
-        ]
-        
-        # Create group of batch tasks
-        batch_tasks = group(
-            send_email_campaign.s(campaign_id, batch, security_context)
-            for batch in recipient_batches
-        )
-        
-        # Execute batches
-        batch_results = batch_tasks.apply_async()
-        
-        # Update campaign status
-        campaign_service.update_campaign_execution_status(
-            campaign_id, 
-            f"Workflow started: {len(recipient_batches)} batches, {len(target_recipients)} recipients"
-        )
+        logger.info(f"Sent {sent_count} activity reminder emails")
         
         return {
-            'campaign_id': campaign_id,
-            'total_recipients': len(target_recipients),
-            'batch_count': len(recipient_batches),
-            'batch_task_ids': [task.id for task in batch_results.children],
-            'workflow_started_at': timezone.now().isoformat()
+            'status': 'completed',
+            'sent_count': sent_count
         }
         
     except Exception as e:
-        logger.error(f"Email campaign workflow failed: {e}", exc_info=True)
-        return {
-            'error': str(e),
-            'campaign_id': campaign_id
+        logger.error(f"Activity reminder task failed: {e}")
+        raise
+
+
+@shared_task(base=TenantAwareTask, bind=True)
+def send_welcome_email_task(self, user_id, tenant_id):
+    """
+    Send welcome email to new user
+    """
+    try:
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        tenant = get_tenant_by_id(tenant_id)
+        user = User.objects.get(id=user_id)
+        service = EmailService(tenant=tenant)
+        
+        context = {
+            'user_name': user.get_full_name(),
+            'tenant_name': tenant.name,
+            'login_url': f"{settings.FRONTEND_URL}/auth/login",
+            'support_email': tenant.support_email or settings.DEFAULT_FROM_EMAIL
         }
+        
+        service.send_template_email(
+            template_name='welcome_email',
+            to_email=user.email,
+            context=context
+        )
+        
+        logger.info(f"Welcome email sent to {user.email}")
+        
+        return {
+            'status': 'sent',
+            'recipient': user.email
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to send welcome email: {e}")
+        raise
+
+
+@shared_task(base=TenantAwareTask, bind=True)
+def send_password_reset_email_task(self, user_id, reset_token, tenant_id=None):
+    """
+    Send password reset email
+    """
+    try:
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        tenant = get_tenant_by_id(tenant_id) if tenant_id else None
+        user = User.objects.get(id=user_id)
+        service = EmailService(tenant=tenant)
+        
+        context = {
+            'user_name': user.get_full_name(),
+            'reset_url': f"{settings.FRONTEND_URL}/auth/reset-password?token={reset_token}",
+            'tenant_name': tenant.name if tenant else settings.SITE_NAME
+        }
+        
+        service.send_template_email(
+            template_name='password_reset',
+            to_email=user.email,
+            context=context
+        )
+        
+        logger.info(f"Password reset email sent to {user.email}")
+        
+        return {
+            'status': 'sent',
+            'recipient': user.email
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to send password reset email: {e}")
+        raise
+
+
+@shared_task(base=TenantAwareTask, bind=True)
+def cleanup_email_logs_task(self, tenant_id=None, days_to_keep=90):
+    """
+    Clean up old email logs
+    """
+    try:
+        tenant = get_tenant_by_id(tenant_id) if tenant_id else None
+        cutoff_date = timezone.now() - timezone.timedelta(days=days_to_keep)
+        
+        query = EmailLog.objects.filter(sent_at__lt=cutoff_date)
+        if tenant:
+            query = query.filter(tenant=tenant)
+        
+        deleted_count = query.delete()[0]
+        
+        logger.info(f"Cleaned up {deleted_count} old email logs")
+        
+        return {
+            'status': 'completed',
+            'deleted_count': deleted_count
+        }
+        
+    except Exception as e:
+        logger.error(f"Email log cleanup failed: {e}")
+        raise
+
+
+@shared_task(base=MonitoredTask, bind=True)
+def generate_email_analytics_task(self, tenant_id, days=30):
+    """
+    Generate email analytics and update campaign metrics
+    """
+    try:
+        tenant = get_tenant_by_id(tenant_id)
+        service = EmailService(tenant=tenant)
+        
+        # Generate comprehensive email analytics
+        analytics = service.generate_email_analytics(days=days)
+        
+        # Update campaign metrics
+        campaigns = Campaign.objects.filter(
+            tenant=tenant,
+            created_at__gte=timezone.now() - timezone.timedelta(days=days)
+        )
+        
+        updated_campaigns = 0
+        for campaign in campaigns:
+            metrics = service.calculate_campaign_metrics(campaign)
+            
+            # Update campaign with calculated metrics
+            campaign.open_rate = metrics.get('open_rate', 0)
+            campaign.click_through_rate = metrics.get('click_rate', 0)
+            campaign.bounce_rate = metrics.get('bounce_rate', 0)
+            campaign.unsubscribe_rate = metrics.get('unsubscribe_rate', 0)
+            campaign.save(update_fields=[
+                'open_rate', 'click_through_rate', 'bounce_rate', 'unsubscribe_rate'
+            ])
+            
+            updated_campaigns += 1
+        
+        logger.info(f"Generated email analytics and updated {updated_campaigns} campaigns")
+        
+        return {
+            'status': 'completed',
+            'analytics': analytics,
+            'updated_campaigns': updated_campaigns
+        }
+        
+    except Exception as e:
+        logger.error(f"Email analytics generation failed: {e}")
+        raise

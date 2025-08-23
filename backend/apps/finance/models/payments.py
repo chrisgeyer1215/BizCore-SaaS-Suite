@@ -13,12 +13,19 @@ from datetime import date
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
 from apps.core.utils import generate_code
 from .currency import Currency
+from .base import (
+    AIFinanceBaseMixin, 
+    SmartCategorizationMixin, 
+    PredictiveAnalyticsMixin, 
+    IntelligentMatchingMixin
+)
 
 User = get_user_model()
 
 
-class Payment(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced payment records with multi-currency support"""
+class Payment(TenantBaseModel, SoftDeleteMixin, AIFinanceBaseMixin, 
+              SmartCategorizationMixin, PredictiveAnalyticsMixin, IntelligentMatchingMixin):
+    """AI-Enhanced payment records with fraud detection and intelligent matching"""
     
     PAYMENT_TYPE_CHOICES = [
         ('RECEIVED', 'Payment Received'),

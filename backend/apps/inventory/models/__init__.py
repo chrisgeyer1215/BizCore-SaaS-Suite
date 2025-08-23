@@ -41,7 +41,7 @@ from .reservations.reservations import StockReservation, StockReservationItem, R
 from .alerts.alerts import InventoryAlert, AlertRule, AlertHistory
 
 # Report models
-from .reports.report import InventoryReport, ReportTemplate, ReportSchedule, ReportExecution
+from .reports.reports import InventoryReport, ReportTemplate, ReportSchedule, ReportExecution
 
 # Abstract models (for inheritance)
 from apps.core.models import TenantBaseModel, SoftDeleteMixin

@@ -7,6 +7,8 @@ from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from rest_framework.documentation import include_docs_urls
+from rest_framework.routers import DefaultRouter
 
 
 @api_view(['GET'])
@@ -40,31 +42,51 @@ def api_root(request):
     })
 
 
+# API Version 1 Router
+api_v1_router = DefaultRouter()
+
 urlpatterns = [
-    # Admin
+
+     # Admin
     path('admin/', admin.site.urls),
-    
-    # API Root
-    path('api/', api_root, name='api_root'),
+
+     # CRM Admin Interface
+    path('crm-admin/', include('apps.crm.admin_urls')),
     
     # API Documentation
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+    path('docs/', include_docs_urls(title='SaaS-AICE API')),
     
-    # Authentication
-    path('api/auth/', include('apps.auth.urls')),
+    # Authentication (Public Schema)
+    path('api/v1/auth/', include('apps.auth.urls')),
     
-    # Core (Tenant management, etc.)
-    path('api/tenants/', include('apps.core.urls')),
+    # Core APIs (Tenant Schema)
+    path('api/v1/core/', include('apps.core.urls')),
+    path('api/v1/crm/', include('apps.crm.urls')),
+    path('api/v1/inventory/', include('apps.inventory.urls')),
+    path('api/v1/ecommerce/', include('apps.ecommerce.urls')),
+    path('api/v1/finance/', include('apps.finance.urls')),
     
-    # Tenant-specific apps (these require tenant context)
-    path('api/crm/', include('apps.crm.urls')),
-    path('api/inventory/', include('apps.inventory.urls')),
-    path('api/ecommerce/', include('apps.ecommerce.urls')),
-    path('api/finance/', include('apps.finance.urls')),
-    path('api/ai/', include('apps.ai.urls')),
+    # Sector Apps
+    path('api/v1/sectors/', include('apps.sectors.urls')),
+    
+    # AI & Analytics
+    path('api/v1/ai/', include('apps.ai.urls')),
+    
+    # API Router (for ViewSets)
+    path('api/v1/', include(api_v1_router.urls)),
+    
+    # Health Check
+    path('health/', include('apps.core.health_urls')),
 ]
+
+# Error handlers
+handler400 = 'apps.core.views.bad_request'
+handler403 = 'apps.core.views.permission_denied'
+handler404 = 'apps.core.views.page_not_found'
+handler500 = 'apps.core.views.server_error'
 
 # Serve media files in development
 if settings.DEBUG:
@@ -77,29 +99,3 @@ if settings.DEBUG:
         urlpatterns = [
             path('__debug__/', include(debug_toolbar.urls)),
         ] + urlpatterns
-
-
-
-# following will added for api documentation
-# config/urls.py - Add documentation URLs
-
-from django.contrib import admin
-from django.urls import path, include
-from drf_spectacular.views import (
-    SpectacularAPIView, 
-    SpectacularRedocView, 
-    SpectacularSwaggerView
-)
-
-urlpatterns = [
-    path('admin/', admin.site.urls),
-    path('api/v1/', include('apps.inventory.api.v1.urls')),
-    
-    # API Documentation URLs
-    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
-    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
-    path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
-    
-    # Custom documentation pages
-    path('docs/', include('apps.inventory.api.documentation.urls')),
-]

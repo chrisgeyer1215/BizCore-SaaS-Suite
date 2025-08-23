@@ -13,12 +13,19 @@ from datetime import date, timedelta
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
 from apps.core.utils import generate_code
 from .currency import Currency
+from .base import (
+    AIFinanceBaseMixin, 
+    SmartCategorizationMixin, 
+    PredictiveAnalyticsMixin, 
+    IntelligentMatchingMixin
+)
 
 User = get_user_model()
 
 
-class Invoice(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced customer invoices with multi-currency and CRM integration"""
+class Invoice(TenantBaseModel, SoftDeleteMixin, AIFinanceBaseMixin, 
+              PredictiveAnalyticsMixin, IntelligentMatchingMixin):
+    """AI-Enhanced customer invoices with predictive analytics and intelligent automation"""
     
     STATUS_CHOICES = [
         ('DRAFT', 'Draft'),

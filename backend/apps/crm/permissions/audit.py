@@ -299,7 +299,8 @@ class AuditPermission(ObjectLevelPermission):
             logger.error(f"SOX compliance check failed: {e}")
             return True
     
-    def _store_audit_log(self, auditStore audit log with proper retention and security"""
+    def _store_audit_log(self, audit_data):
+        """Store audit log with proper retention and security"""
         try:
             from ..models import AuditLog
             
@@ -389,7 +390,8 @@ class AuditPermission(ObjectLevelPermission):
             logger.error(f"Business context extraction failed: {e}")
             return {}
     
-    def _trigger_real_time_monitoring(self for high-sensitivity access"""
+    def _trigger_real_time_monitoring(self, audit_data):
+        """Trigger real-time monitoring for high-sensitivity access"""
         try:
             # Send to security monitoring system
             monitoring_alert = {

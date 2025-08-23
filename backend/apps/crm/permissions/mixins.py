@@ -13,6 +13,7 @@ import logging
 from .field_level import SensitiveDataPermission
 from .role_based import DynamicRolePermission
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -292,7 +293,7 @@ class AuditMixin:
             logger.error(f"Audit serialization failed: {e}")
             return {'error': 'serialization_failed'}
     
-    def _calculate_changes(self, -> Dict:
+    def _calculate_changes(self, original_data, new_data) -> Dict:
         """Calculate changes between original and new data"""
         try:
             changes = {}
@@ -365,7 +366,8 @@ class SecurityMixin:
             logger.error(f"Secure create failed: {e}")
             raise
     
-    def _validate_input_security(self, data for security issues"""
+    def _validate_input_security(self, data):
+        """Validate input data for security issues"""
         try:
             # Check for potential XSS
             for field, value in data.items():
@@ -411,7 +413,7 @@ class SecurityMixin:
         return any(pattern in value_lower for pattern in sql_patterns)
     
     def _check_creation_rate_limit(self):
-        """Check rate limit for object creation"""
+        """Check if user exceeds creation rate limit"""
         try:
             from django.core.cache import cache
             

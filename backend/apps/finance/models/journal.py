@@ -14,12 +14,19 @@ import uuid
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
 from apps.core.utils import generate_code
 from .currency import Currency
+from .base import (
+    AIFinanceBaseMixin, 
+    SmartCategorizationMixin, 
+    PredictiveAnalyticsMixin, 
+    IntelligentMatchingMixin
+)
 
 User = get_user_model()
 
 
-class JournalEntry(TenantBaseModel, SoftDeleteMixin):
-    """Enhanced journal entries with multi-currency and source tracking"""
+class JournalEntry(TenantBaseModel, SoftDeleteMixin, AIFinanceBaseMixin, 
+                   SmartCategorizationMixin, PredictiveAnalyticsMixin, IntelligentMatchingMixin):
+    """AI-Enhanced journal entries with intelligent automation and analytics"""
     
     STATUS_CHOICES = [
         ('DRAFT', 'Draft'),
@@ -387,10 +394,365 @@ class JournalEntry(TenantBaseModel, SoftDeleteMixin):
             self.journal_lines.exists() and
             (not self.financial_period or self.financial_period.status == 'OPEN')
         )
+    
+    # ============================================================================
+    # AI-ENHANCED METHODS AND INTELLIGENT FEATURES
+    # ============================================================================
+    
+    def extract_ai_features(self):
+        """Extract AI features specific to journal entries"""
+        super().extract_ai_features()
+        
+        features = self.ml_features.copy()
+        
+        # Entry-specific features
+        features.update({
+            'entry_type': self.entry_type,
+            'total_amount': float(self.total_debit + self.total_credit) / 2,
+            'line_count': self.journal_lines.count(),
+            'is_system_generated': self.is_system_generated,
+            'is_recurring': self.is_recurring,
+            'currency_code': self.currency.code if self.currency else 'USD',
+            'exchange_rate': float(self.exchange_rate),
+            'entry_date_month': self.entry_date.month,
+            'entry_date_weekday': self.entry_date.weekday(),
+            'has_source_document': bool(self.source_document_id),
+        })
+        
+        # Account distribution analysis
+        account_types = []
+        for line in self.journal_lines.all():
+            if hasattr(line.account, 'account_type'):
+                account_types.append(line.account.account_type)
+        
+        features['account_types'] = list(set(account_types))
+        features['involves_cash'] = any('CASH' in acct_type or 'BANK' in acct_type for acct_type in account_types)
+        features['involves_revenue'] = any('REVENUE' in acct_type for acct_type in account_types)
+        features['involves_expense'] = any('EXPENSE' in acct_type for acct_type in account_types)
+        
+        # Tracking dimension analysis
+        features.update({
+            'has_customer_tracking': any(line.customer for line in self.journal_lines.all()),
+            'has_vendor_tracking': any(line.vendor for line in self.journal_lines.all()),
+            'has_project_tracking': any(line.project for line in self.journal_lines.all()),
+            'has_department_tracking': any(line.department for line in self.journal_lines.all()),
+        })
+        
+        self.ml_features = features
+    
+    def intelligent_entry_validation(self):
+        """AI-powered validation and anomaly detection"""
+        try:
+            # Extract features for analysis
+            self.extract_ai_features()
+            
+            # Detect unusual patterns
+            validation_issues = []
+            
+            # Amount-based anomalies
+            total_amount = float(self.total_debit + self.total_credit) / 2
+            if total_amount > 100000:
+                validation_issues.append({
+                    'type': 'high_amount',
+                    'severity': 'medium',
+                    'message': f'High amount entry: ${total_amount:,.2f}',
+                    'recommendation': 'Consider requiring additional approval for high-value entries'
+                })
+            
+            # Unusual entry patterns
+            if self.entry_type == 'MANUAL' and total_amount > 50000:
+                validation_issues.append({
+                    'type': 'large_manual_entry',
+                    'severity': 'high',
+                    'message': 'Large manual journal entry detected',
+                    'recommendation': 'Verify source documentation and authorization'
+                })
+            
+            # Weekend/off-hours entries
+            if self.entry_date.weekday() >= 5:  # Saturday or Sunday
+                validation_issues.append({
+                    'type': 'weekend_entry',
+                    'severity': 'low',
+                    'message': 'Entry created on weekend',
+                    'recommendation': 'Review for business necessity'
+                })
+            
+            # Round amount analysis (potential fraud indicator)
+            if total_amount > 1000 and total_amount % 100 == 0:
+                validation_issues.append({
+                    'type': 'round_amount',
+                    'severity': 'low',
+                    'message': 'Entry amount is perfectly round',
+                    'recommendation': 'Verify accuracy of amount calculation'
+                })
+            
+            # Unusual account combinations
+            self._analyze_account_combinations(validation_issues)
+            
+            # Update AI insights
+            if not isinstance(self.ai_insights, dict):
+                self.ai_insights = {}
+            
+            self.ai_insights['validation_issues'] = validation_issues
+            self.ai_insights['validation_timestamp'] = timezone.now().isoformat()
+            
+            # Calculate risk score based on issues
+            risk_score = sum(
+                {'low': 5, 'medium': 15, 'high': 30, 'critical': 50}.get(issue['severity'], 0)
+                for issue in validation_issues
+            )
+            self.ai_risk_score = Decimal(str(min(100, risk_score)))
+            
+            return validation_issues
+            
+        except Exception as e:
+            logger.error(f"Intelligent validation failed for journal entry {self.id}: {str(e)}")
+            return []
+    
+    def _analyze_account_combinations(self, validation_issues):
+        """Analyze unusual account combinations"""
+        account_types = []
+        for line in self.journal_lines.all():
+            if hasattr(line.account, 'account_type'):
+                account_types.append(line.account.account_type)
+        
+        # Check for unusual combinations
+        if 'CASH' in account_types and 'REVENUE' in account_types and self.entry_type == 'MANUAL':
+            validation_issues.append({
+                'type': 'cash_revenue_manual',
+                'severity': 'medium',
+                'message': 'Manual entry affecting cash and revenue accounts',
+                'recommendation': 'Ensure proper sales process documentation'
+            })
+        
+        if account_types.count('CASH') > 1:
+            validation_issues.append({
+                'type': 'multiple_cash_accounts',
+                'severity': 'medium',
+                'message': 'Entry affects multiple cash accounts',
+                'recommendation': 'Verify if cash transfer is properly documented'
+            })
+    
+    def suggest_categorization_improvements(self):
+        """AI-powered suggestions for better categorization"""
+        try:
+            suggestions = []
+            
+            # Analyze journal lines for categorization opportunities
+            for line in self.journal_lines.all():
+                # Check if line could benefit from additional tracking
+                if not line.department and 'expense' in line.account.account_type.lower():
+                    suggestions.append({
+                        'line_number': line.line_number,
+                        'type': 'missing_department',
+                        'message': 'Consider adding department tracking for expense analysis',
+                        'priority': 'medium'
+                    })
+                
+                if not line.project and line.amount > 5000:
+                    suggestions.append({
+                        'line_number': line.line_number,
+                        'type': 'missing_project',
+                        'message': 'Large amount - consider project tracking for better cost allocation',
+                        'priority': 'high'
+                    })
+                
+                # Tax code suggestions
+                if not line.tax_code and 'expense' in line.account.account_type.lower():
+                    suggestions.append({
+                        'line_number': line.line_number,
+                        'type': 'missing_tax_code',
+                        'message': 'Consider adding tax code for proper tax reporting',
+                        'priority': 'low'
+                    })
+            
+            # Update AI insights
+            if not isinstance(self.ai_insights, dict):
+                self.ai_insights = {}
+            
+            self.ai_insights['categorization_suggestions'] = suggestions
+            
+            return suggestions
+            
+        except Exception as e:
+            logger.error(f"Categorization analysis failed for journal entry {self.id}: {str(e)}")
+            return []
+    
+    def predict_posting_impact(self):
+        """Predict the impact of posting this journal entry"""
+        try:
+            impact_analysis = {
+                'account_impacts': [],
+                'financial_statement_effects': {},
+                'cash_flow_impact': 0,
+                'profitability_impact': 0,
+            }
+            
+            # Analyze impact on each account
+            for line in self.journal_lines.all():
+                account_impact = {
+                    'account_name': line.account.name,
+                    'account_type': getattr(line.account, 'account_type', 'Unknown'),
+                    'amount_change': float(line.amount),
+                    'direction': 'increase' if line.is_debit else 'decrease',
+                    'new_balance_estimate': float(line.account.current_balance) + 
+                                         (float(line.amount) if line.is_debit else -float(line.amount))
+                }
+                impact_analysis['account_impacts'].append(account_impact)
+                
+                # Calculate financial statement effects
+                account_type = getattr(line.account, 'account_type', '')
+                amount = float(line.amount)
+                
+                if 'ASSET' in account_type:
+                    impact_analysis['financial_statement_effects']['total_assets'] = \
+                        impact_analysis['financial_statement_effects'].get('total_assets', 0) + \
+                        (amount if line.is_debit else -amount)
+                        
+                elif 'LIABILITY' in account_type:
+                    impact_analysis['financial_statement_effects']['total_liabilities'] = \
+                        impact_analysis['financial_statement_effects'].get('total_liabilities', 0) + \
+                        (amount if not line.is_debit else -amount)
+                        
+                elif 'EQUITY' in account_type:
+                    impact_analysis['financial_statement_effects']['total_equity'] = \
+                        impact_analysis['financial_statement_effects'].get('total_equity', 0) + \
+                        (amount if not line.is_debit else -amount)
+                        
+                elif 'REVENUE' in account_type:
+                    revenue_impact = amount if not line.is_debit else -amount
+                    impact_analysis['profitability_impact'] += revenue_impact
+                    
+                elif 'EXPENSE' in account_type:
+                    expense_impact = amount if line.is_debit else -amount
+                    impact_analysis['profitability_impact'] -= expense_impact
+                
+                # Cash flow impact
+                if 'CASH' in account_type or 'BANK' in account_type:
+                    cash_impact = amount if line.is_debit else -amount
+                    impact_analysis['cash_flow_impact'] += cash_impact
+            
+            # Store predictions
+            if not isinstance(self.ai_predictions, dict):
+                self.ai_predictions = {}
+            
+            self.ai_predictions['posting_impact'] = impact_analysis
+            self.ai_predictions['impact_timestamp'] = timezone.now().isoformat()
+            
+            return impact_analysis
+            
+        except Exception as e:
+            logger.error(f"Impact prediction failed for journal entry {self.id}: {str(e)}")
+            return {}
+    
+    def generate_audit_trail_insights(self):
+        """Generate AI insights for audit trail analysis"""
+        try:
+            audit_insights = {
+                'creation_pattern': 'normal',
+                'timing_analysis': {},
+                'user_behavior': {},
+                'compliance_flags': []
+            }
+            
+            # Timing analysis
+            creation_hour = self.created_at.hour if self.created_at else 12
+            if creation_hour < 6 or creation_hour > 22:
+                audit_insights['timing_analysis']['off_hours_creation'] = True
+                audit_insights['compliance_flags'].append('Created during off-business hours')
+            
+            # User behavior analysis
+            if self.created_by:
+                # Analyze user's typical entry patterns
+                user_entries = JournalEntry.objects.filter(
+                    tenant=self.tenant,
+                    created_by=self.created_by,
+                    created_at__gte=timezone.now() - timedelta(days=30)
+                ).exclude(id=self.id)
+                
+                avg_amount = user_entries.aggregate(
+                    avg=models.Avg(models.F('total_debit') + models.F('total_credit'))
+                )['avg'] or 0
+                
+                current_amount = float(self.total_debit + self.total_credit)
+                
+                if current_amount > avg_amount * 3:
+                    audit_insights['user_behavior']['unusual_amount'] = True
+                    audit_insights['compliance_flags'].append('Amount significantly higher than user average')
+            
+            # Entry type analysis
+            if self.entry_type == 'MANUAL' and current_amount > 25000:
+                audit_insights['compliance_flags'].append('Large manual entry - requires enhanced review')
+            
+            # Update AI insights
+            if not isinstance(self.ai_insights, dict):
+                self.ai_insights = {}
+            
+            self.ai_insights['audit_trail'] = audit_insights
+            
+            return audit_insights
+            
+        except Exception as e:
+            logger.error(f"Audit trail analysis failed for journal entry {self.id}: {str(e)}")
+            return {}
+    
+    def run_comprehensive_ai_analysis(self):
+        """Execute comprehensive AI analysis for journal entries"""
+        try:
+            logger.info(f"Starting comprehensive AI analysis for journal entry {self.id}")
+            
+            # Run all AI analysis methods
+            results = {
+                'validation_issues': self.intelligent_entry_validation(),
+                'categorization_suggestions': self.suggest_categorization_improvements(),
+                'posting_impact': self.predict_posting_impact(),
+                'audit_insights': self.generate_audit_trail_insights(),
+            }
+            
+            # Run base AI analysis
+            base_analysis = super().analyze_with_ai()
+            
+            # Update comprehensive insights
+            if not isinstance(self.ai_insights, dict):
+                self.ai_insights = {}
+            
+            self.ai_insights.update({
+                'comprehensive_analysis': {
+                    'timestamp': timezone.now().isoformat(),
+                    'analysis_complete': base_analysis,
+                    'total_validation_issues': len(results['validation_issues']),
+                    'total_suggestions': len(results['categorization_suggestions']),
+                    'compliance_flags': results['audit_insights'].get('compliance_flags', []),
+                }
+            })
+            
+            # Calculate overall confidence
+            confidence_factors = [
+                85 if self.is_system_generated else 70,  # System entries more reliable
+                90 if self.source_document_id else 60,   # Source document availability
+                95 - len(results['validation_issues']) * 10,  # Validation issues reduce confidence
+                80 if self.is_balanced else 30,  # Balance check
+            ]
+            
+            self.ai_confidence_level = Decimal(str(
+                max(0, min(100, sum(confidence_factors) / len(confidence_factors)))
+            ))
+            
+            self.save(update_fields=[
+                'ai_insights', 'ai_predictions', 'ai_confidence_level', 
+                'ai_risk_score', 'last_ai_analysis'
+            ])
+            
+            logger.info(f"Comprehensive AI analysis completed for journal entry {self.id}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Comprehensive AI analysis failed for journal entry {self.id}: {str(e)}")
+            return {}
 
 
-class JournalEntryLine(TenantBaseModel):
-    """Enhanced journal entry lines with multi-currency and tracking"""
+class JournalEntryLine(TenantBaseModel, SmartCategorizationMixin):
+    """AI-Enhanced journal entry lines with intelligent categorization"""
     
     journal_entry = models.ForeignKey(
         JournalEntry,

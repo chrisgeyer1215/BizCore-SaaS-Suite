@@ -10,7 +10,7 @@ from datetime import timedelta
 import json
 
 from .base import TenantAwareAdmin, BaseModelAdmin
-from ..models import Report, Dashboard, AuditLog, TaskExecution
+from ..models import Report, Dashboard, AuditTrail
 
 
 class ReportAdmin(TenantAwareAdmin):
@@ -118,7 +118,8 @@ class AuditLogAdmin(BaseModelAdmin):
     
     def result_indicator(self, obj):
         """Visual indicator for audit result"""
-        if obj.additional:
+        if obj.additional_data:
+            try:
                 data = json.loads(obj.additional_data)
                 result = data.get('result', True)
                 
@@ -135,7 +136,9 @@ class AuditLogAdmin(BaseModelAdmin):
     
     def additional_data_formatted(self, obj):
         """Format additional data as readable JSON"""
-        if obj.additional_data = json.loads(obj.additional_data)
+        if obj.additional_data:
+            try:
+                data = json.loads(obj.additional_data)
                 formatted = json.dumps(data, indent=2)
                 return format_html('<pre>{}</pre>', formatted)
             except:

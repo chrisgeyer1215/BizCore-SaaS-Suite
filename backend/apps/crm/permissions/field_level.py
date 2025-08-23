@@ -209,7 +209,7 @@ class SensitiveDataPermission(FieldLevelPermission):
         }
     }
     
-    def filter_sensitive request, obj=None) -> Dict:
+    def filter_sensitive_data(self, data, request, obj=None) -> Dict:
         """Filter sensitive data based on compliance and permissions"""
         try:
             filtered_data = data.copy()
@@ -240,7 +240,9 @@ class SensitiveDataPermission(FieldLevelPermission):
             
             # Check if user has PII access permission
             if not self._has_pii_access_permission(request):
-                for field in pii_fields:._mask_pii_field(data[field], field)
+                for field in pii_fields:
+                    if field in data:
+                        data[field] = self._mask_pii_field(data[field], field)
             
             return data
             
@@ -355,7 +357,7 @@ class SensitiveDataPermission(FieldLevelPermission):
             logger.error(f"Financial masking failed: {e}")
             return '***'
     
-    def _audit_sensitive_data_access(self Dict):
+    def _audit_sensitive_data_access(self, data, request, obj=None) -> Dict:
         """Audit sensitive data access for compliance"""
         try:
             from ..models import DataAccessLog

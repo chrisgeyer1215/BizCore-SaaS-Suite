@@ -1,0 +1,36 @@
+<!-- backend/templates/api_docs/base.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SaaS-AICE API Documentation{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4.15.5/swagger-ui.css">
+    <style>
+        .swagger-ui .topbar { display: none; }
+        .swagger-ui .info .title { color: #1f2937; }
+        .swagger-ui .scheme-container { background: #f8fafc; }
+        .custom-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 1rem 2rem;
+            margin-bottom: 2rem;
+        }
+        .custom-header h1 { margin: 0; font-size: 2rem; }
+        .custom-header p { margin: 0.5rem 0 0 0; opacity: 0.9; }
+    </style>
+</head>
+<body>
+    <div class="custom-header">
+        <h1>🚀 SaaS-AICE CRM API</h1>
+        <p>Enterprise Multi-Tenant Customer Relationship Management Platform</p>
+    </div>
+    
+    {% block content %}{% endblock %}
+    
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4.15.5/swagger-ui-bundle.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@4.15.5/swagger-ui-standalone-preset.js"></script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>

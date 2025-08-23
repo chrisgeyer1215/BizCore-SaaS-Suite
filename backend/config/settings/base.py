@@ -28,8 +28,9 @@ SHARED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
-    'drf_spectacular',
     'django_filters',
+    'drf_spectacular',
+    'drf_spectacular_sidecar',
 ]
 
 TENANT_APPS = [
@@ -164,6 +165,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    
 }
 
 # JWT Configuration
@@ -218,14 +220,6 @@ CELERY_TIMEZONE = TIME_ZONE
 # Email Configuration
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # Development
 
-# Spectacular Settings
-SPECTACULAR_SETTINGS = {
-    'TITLE': 'SaaS-AICE API',
-    'DESCRIPTION': 'Multi-tenant SaaS Platform API',
-    'VERSION': '1.0.0',
-    'SERVE_INCLUDE_SCHEMA': False,
-}
-
 # Logging
 LOGGING = {
     'version': 1,
@@ -253,4 +247,158 @@ LOGGING = {
             'propagate': False,
         },
     },
+}
+
+# API Documentation
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'SaaS-AICE Multi-Tenant CRM API',
+    'DESCRIPTION': '''
+    # SaaS-AICE Multi-Tenant CRM Platform API
+
+    A comprehensive, enterprise-grade multi-tenant CRM system with advanced analytics,
+    workflow automation, and AI-powered insights.
+
+    ## Features
+    - **Multi-tenant Architecture**: Schema-per-tenant isolation
+    - **Advanced CRM**: Lead, Opportunity, Account, and Activity management
+    - **Marketing Automation**: Campaign management and email marketing
+    - **Customer Support**: Ticket management with SLA tracking
+    - **Analytics & AI**: Predictive analytics and business intelligence
+    - **Workflow Automation**: Business process automation and integrations
+
+    ## Authentication
+    This API uses JWT (JSON Web Token) authentication. Include the token in the Authorization header:
+    ```
+    Authorization: Bearer <your-jwt-token>
+    ```
+
+    ## Multi-tenant Access
+    Access tenant-specific data using subdomains:
+    ```
+    https://tenant1.yourdomain.com/api/v1/crm/
+    https://tenant2.yourdomain.com/api/v1/crm/
+    ```
+
+    ## Rate Limiting
+    API requests are rate-limited per tenant:
+    - **Standard Plan**: 1000 requests/hour
+    - **Professional Plan**: 5000 requests/hour  
+    - **Enterprise Plan**: 20000 requests/hour
+    ''',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    'CONTACT': {
+        'name': 'SaaS-AICE API Support',
+        'email': 'api-support@saas-aice.com',
+        'url': 'https://saas-aice.com/support',
+    },
+    'LICENSE': {
+        'name': 'Proprietary License',
+        'url': 'https://saas-aice.com/license',
+    },
+    'EXTERNAL_DOCS': {
+        'description': 'Full Documentation',
+        'url': 'https://docs.saas-aice.com',
+    },
+    'TAGS': [
+        {
+            'name': 'Authentication',
+            'description': 'User authentication and authorization endpoints'
+        },
+        {
+            'name': 'Accounts',
+            'description': 'Customer account management operations'
+        },
+        {
+            'name': 'Leads',
+            'description': 'Lead management and conversion tracking'
+        },
+        {
+            'name': 'Opportunities',
+            'description': 'Sales opportunity and pipeline management'
+        },
+        {
+            'name': 'Activities',
+            'description': 'Communication and task management'
+        },
+        {
+            'name': 'Campaigns',
+            'description': 'Marketing campaign and email management'
+        },
+        {
+            'name': 'Tickets',
+            'description': 'Customer support and service management'
+        },
+        {
+            'name': 'Analytics',
+            'description': 'Business intelligence and reporting'
+        },
+        {
+            'name': 'Workflows',
+            'description': 'Process automation and integrations'
+        },
+        {
+            'name': 'Documents',
+            'description': 'File and document management'
+        },
+        {
+            'name': 'Territories',
+            'description': 'Sales territory and team management'
+        },
+        {
+            'name': 'Products',
+            'description': 'Product catalog and pricing management'
+        },
+    ],
+    'COMPONENT_SPLIT_REQUEST': True,
+    'SORT_OPERATIONS': False,
+    'DISABLE_ERRORS_AND_WARNINGS': False,
+    'DEFAULT_GENERATOR_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'SERVE_PERMISSIONS': ['rest_framework.permissions.AllowAny'],
+    'SERVERS': [
+        {
+            'url': 'https://api.saas-aice.com',
+            'description': 'Production Server'
+        },
+        {
+            'url': 'https://staging-api.saas-aice.com',
+            'description': 'Staging Server'
+        },
+        {
+            'url': 'http://localhost:8000',
+            'description': 'Development Server'
+        },
+    ],
+    'AUTHENTICATION_WHITELIST': [
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'APPEND_COMPONENTS': {
+        'securitySchemes': {
+            'jwtAuth': {
+                'type': 'http',
+                'scheme': 'bearer',
+                'bearerFormat': 'JWT',
+                'description': 'JWT token authentication'
+            },
+            'tenantAuth': {
+                'type': 'apiKey',
+                'in': 'header',
+                'name': 'X-Tenant-Domain',
+                'description': 'Tenant domain for multi-tenant access'
+            }
+        }
+    },
+    'SECURITY': [
+        {
+            'jwtAuth': [],
+            'tenantAuth': []
+        }
+    ],
+    'PREPROCESSING_HOOKS': [
+        'apps.core.schema_processors.custom_preprocessing_hook',
+    ],
+    'POSTPROCESSING_HOOKS': [
+        'apps.core.schema_processors.custom_postprocessing_hook',
+    ],
 }

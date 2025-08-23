@@ -4,8 +4,8 @@
 Advanced AI-Powered Base Models and Mixins for E-commerce
 Featuring machine learning integration, real-time analytics, and intelligent decision making
 """
-
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.contrib.auth import get_user_model
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
@@ -16,7 +16,7 @@ from datetime import timedelta, datetime
 import uuid
 import json
 import logging
-from enum import TextChoices
+from django.db.models import TextChoices
 from typing import Dict, List, Any, Optional, Tuple
 
 from apps.core.models import TenantBaseModel, SoftDeleteMixin
@@ -255,353 +255,403 @@ class SEOMixin(models.Model):
         abstract = True
 
 
+
 class AIOptimizedPricingMixin(models.Model):
     """
     Advanced AI-powered pricing mixin with dynamic optimization, 
     competitor analysis, and intelligent price adjustments
     """
     
-    # Core pricing fields
+    # Core Pricing Fields
     price = models.DecimalField(
-        max_digits=12, 
+        max_digits=10, 
         decimal_places=2, 
-        help_text="Current selling price"
+        validators=[MinValueValidator(Decimal('0.00'))]
     )
     compare_at_price = models.DecimalField(
-        max_digits=12, 
+        max_digits=10, 
         decimal_places=2, 
         null=True, 
         blank=True,
-        help_text="Original price for comparison (strikethrough price)"
+        validators=[MinValueValidator(Decimal('0.00'))]
     )
     cost_price = models.DecimalField(
-        max_digits=12, 
+        max_digits=10, 
         decimal_places=2, 
         null=True, 
         blank=True,
-        help_text="Cost of goods sold"
+        validators=[MinValueValidator(Decimal('0.00'))]
     )
     currency = models.CharField(max_length=3, default='USD')
     
-    # AI-powered pricing optimization
-    ai_optimized_price = models.DecimalField(
-        max_digits=12, 
-        decimal_places=2, 
-        null=True, 
-        blank=True,
-        help_text="AI-recommended optimal price"
+    # Additional AI/ML Enhancement Fields
+    ml_model_version = models.CharField(
+        max_length=50, 
+        blank=True, 
+        null=True,
+        help_text="Version of ML model used for price optimization"
     )
-    price_elasticity = models.DecimalField(
+    
+    prediction_confidence = models.DecimalField(
         max_digits=5, 
         decimal_places=2, 
         null=True, 
         blank=True,
-        help_text="Price elasticity coefficient (-5.00 to 5.00)"
-    )
-    demand_sensitivity = models.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
-        null=True, 
-        blank=True,
-        help_text="Demand sensitivity to price changes"
+        validators=[MinValueValidator(0), MaxValueValidator(100)],
+        help_text="AI model confidence in price prediction (0-100%)"
     )
     
-    # Dynamic pricing controls
-    enable_dynamic_pricing = models.BooleanField(default=False)
-    min_price = models.DecimalField(
-        max_digits=12, 
-        decimal_places=2, 
-        null=True, 
-        blank=True,
-        help_text="Minimum allowed price for dynamic pricing"
-    )
-    max_price = models.DecimalField(
-        max_digits=12, 
-        decimal_places=2, 
-        null=True, 
-        blank=True,
-        help_text="Maximum allowed price for dynamic pricing"
-    )
-    
-    # Market intelligence
-    competitor_prices = models.JSONField(default=dict, blank=True)
-    market_position = models.CharField(
-        max_length=20, 
+    # A/B Testing for Pricing
+    ab_test_group = models.CharField(
+        max_length=20,
         choices=[
-            ('PREMIUM', 'Premium'),
-            ('COMPETITIVE', 'Competitive'),
-            ('ECONOMY', 'Economy'),
-            ('PENETRATION', 'Market Penetration')
+            ('CONTROL', 'Control Group'),
+            ('VARIANT_A', 'Test Variant A'),
+            ('VARIANT_B', 'Test Variant B'),
+            ('VARIANT_C', 'Test Variant C'),
         ],
-        default='COMPETITIVE'
+        blank=True,
+        null=True,
+        help_text="A/B testing group for pricing experiments"
     )
     
-    # Pricing analytics
-    price_history = models.JSONField(default=list, blank=True)
-    conversion_rate_by_price = models.JSONField(default=dict, blank=True)
-    revenue_optimization_score = models.DecimalField(
+    ab_test_start_date = models.DateTimeField(null=True, blank=True)
+    ab_test_end_date = models.DateTimeField(null=True, blank=True)
+    ab_test_metrics = models.JSONField(default=dict, blank=True)
+    
+    # Advanced Market Factors
+    market_volatility_index = models.DecimalField(
         max_digits=5, 
         decimal_places=2, 
         null=True, 
         blank=True,
-        help_text="Revenue optimization score (0-100)"
+        help_text="Market volatility index affecting pricing (0-100)"
     )
     
-    # Time-based pricing
-    seasonal_pricing_rules = models.JSONField(default=dict, blank=True)
-    demand_based_multipliers = models.JSONField(default=dict, blank=True)
-    
-    # Inventory-based pricing
-    inventory_price_adjustment = models.DecimalField(
-        max_digits=5, 
-        decimal_places=2, 
-        default=Decimal('1.00'),
-        help_text="Price multiplier based on inventory levels"
+    customer_segment_pricing = models.JSONField(
+        default=dict, 
+        blank=True,
+        help_text="Pricing by customer segment"
     )
     
-    # Last optimization timestamp
-    last_price_optimization = models.DateTimeField(null=True, blank=True)
+    geographic_pricing = models.JSONField(
+        default=dict, 
+        blank=True,
+        help_text="Pricing by geographic region"
+    )
+    
+    # Real-time Pricing Triggers
+    auto_price_adjustment_rules = models.JSONField(
+        default=dict, 
+        blank=True,
+        help_text="Rules for automatic price adjustments"
+    )
+    
+    price_alert_thresholds = models.JSONField(
+        default=dict, 
+        blank=True,
+        help_text="Thresholds for price change alerts"
+    )
+    
+    # Your existing methods remain...
+    
+    # Additional Enhanced Methods:
+    
+    def get_segment_price(self, customer_segment: str) -> Decimal:
+        """Get price for specific customer segment"""
+        if not self.customer_segment_pricing or customer_segment not in self.customer_segment_pricing:
+            return self.price
+        
+        segment_data = self.customer_segment_pricing[customer_segment]
+        if isinstance(segment_data, dict):
+            multiplier = Decimal(str(segment_data.get('multiplier', 1.0)))
+            return (self.price * multiplier).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+        
+        return Decimal(str(segment_data))
+    
+    def get_geographic_price(self, region: str, currency: str = None) -> Dict[str, Any]:
+        """Get price for specific geographic region"""
+        base_price = self.price
+        target_currency = currency or self.currency
+        
+        if self.geographic_pricing and region in self.geographic_pricing:
+            region_data = self.geographic_pricing[region]
+            
+            # Apply regional multiplier
+            if 'multiplier' in region_data:
+                base_price *= Decimal(str(region_data['multiplier']))
+            
+            # Apply currency conversion if different
+            if 'currency_rate' in region_data and target_currency != self.currency:
+                base_price *= Decimal(str(region_data['currency_rate']))
+        
+        return {
+            'price': base_price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            'currency': target_currency,
+            'region': region
+        }
+    
+    def start_ab_test(self, variant: str, duration_days: int = 30) -> bool:
+        """Start A/B testing for pricing"""
+        if self.ab_test_group:
+            logger.warning(f"A/B test already running for {self.ab_test_group}")
+            return False
+        
+        self.ab_test_group = variant
+        self.ab_test_start_date = timezone.now()
+        self.ab_test_end_date = timezone.now() + timedelta(days=duration_days)
+        
+        # Initialize metrics tracking
+        self.ab_test_metrics = {
+            'start_price': float(self.price),
+            'impressions': 0,
+            'conversions': 0,
+            'revenue': 0.0,
+            'daily_metrics': []
+        }
+        
+        self.save(update_fields=[
+            'ab_test_group', 'ab_test_start_date', 
+            'ab_test_end_date', 'ab_test_metrics'
+        ])
+        
+        logger.info(f"Started A/B test {variant} for {duration_days} days")
+        return True
+    
+    def end_ab_test(self) -> Dict[str, Any]:
+        """End A/B testing and return results"""
+        if not self.ab_test_group:
+            return {'error': 'No active A/B test'}
+        
+        # Calculate final metrics
+        metrics = self.ab_test_metrics or {}
+        impressions = metrics.get('impressions', 0)
+        conversions = metrics.get('conversions', 0)
+        revenue = metrics.get('revenue', 0.0)
+        
+        results = {
+            'test_group': self.ab_test_group,
+            'duration_days': (timezone.now() - self.ab_test_start_date).days if self.ab_test_start_date else 0,
+            'total_impressions': impressions,
+            'total_conversions': conversions,
+            'conversion_rate': (conversions / impressions * 100) if impressions > 0 else 0,
+            'total_revenue': revenue,
+            'average_order_value': revenue / conversions if conversions > 0 else 0,
+            'daily_metrics': metrics.get('daily_metrics', [])
+        }
+        
+        # Reset A/B test fields
+        self.ab_test_group = None
+        self.ab_test_start_date = None
+        self.ab_test_end_date = None
+        
+        self.save(update_fields=[
+            'ab_test_group', 'ab_test_start_date', 'ab_test_end_date'
+        ])
+        
+        logger.info(f"Ended A/B test with results: {results}")
+        return results
+    
+    def track_ab_test_conversion(self, revenue_amount: Decimal = None):
+        """Track conversion for A/B testing"""
+        if not self.ab_test_group or not self.ab_test_metrics:
+            return
+        
+        metrics = self.ab_test_metrics.copy()
+        metrics['conversions'] += 1
+        
+        if revenue_amount:
+            metrics['revenue'] += float(revenue_amount)
+        
+        # Track daily metrics
+        today = timezone.now().date().isoformat()
+        daily_metrics = metrics.get('daily_metrics', [])
+        
+        # Find today's entry or create new one
+        today_metrics = next(
+            (day for day in daily_metrics if day['date'] == today), 
+            None
+        )
+        
+        if today_metrics:
+            today_metrics['conversions'] += 1
+            if revenue_amount:
+                today_metrics['revenue'] += float(revenue_amount)
+        else:
+            daily_metrics.append({
+                'date': today,
+                'conversions': 1,
+                'revenue': float(revenue_amount) if revenue_amount else 0.0,
+                'impressions': 0
+            })
+        
+        metrics['daily_metrics'] = daily_metrics[-30:]  # Keep last 30 days
+        self.ab_test_metrics = metrics
+        
+        self.save(update_fields=['ab_test_metrics'])
+    
+    def evaluate_price_rules(self) -> List[Dict[str, Any]]:
+        """Evaluate automatic pricing rules and return suggested actions"""
+        if not self.auto_price_adjustment_rules:
+            return []
+        
+        suggestions = []
+        
+        for rule_name, rule_config in self.auto_price_adjustment_rules.items():
+            try:
+                suggestion = self._evaluate_single_rule(rule_name, rule_config)
+                if suggestion:
+                    suggestions.append(suggestion)
+            except Exception as e:
+                logger.error(f"Failed to evaluate rule {rule_name}: {e}")
+        
+        return suggestions
+    
+    def _evaluate_single_rule(self, rule_name: str, rule_config: Dict) -> Optional[Dict[str, Any]]:
+        """Evaluate a single pricing rule"""
+        rule_type = rule_config.get('type')
+        
+        if rule_type == 'inventory_based':
+            return self._evaluate_inventory_rule(rule_name, rule_config)
+        elif rule_type == 'competitor_based':
+            return self._evaluate_competitor_rule(rule_name, rule_config)
+        elif rule_type == 'performance_based':
+            return self._evaluate_performance_rule(rule_name, rule_config)
+        elif rule_type == 'time_based':
+            return self._evaluate_time_rule(rule_name, rule_config)
+        
+        return None
+    
+    def _evaluate_inventory_rule(self, rule_name: str, rule_config: Dict) -> Optional[Dict[str, Any]]:
+        """Evaluate inventory-based pricing rule"""
+        if not hasattr(self, 'available_quantity'):
+            return None
+        
+        low_threshold = rule_config.get('low_inventory_threshold', 10)
+        high_threshold = rule_config.get('high_inventory_threshold', 100)
+        
+        if self.available_quantity <= low_threshold:
+            # Low inventory - suggest price increase
+            increase_pct = rule_config.get('low_inventory_increase', 5.0)
+            new_price = self.price * (1 + Decimal(str(increase_pct)) / 100)
+            
+            return {
+                'rule_name': rule_name,
+                'action': 'increase_price',
+                'current_price': float(self.price),
+                'suggested_price': float(new_price),
+                'reason': f'Low inventory ({self.available_quantity} units)',
+                'confidence': 0.8
+            }
+        
+        elif self.available_quantity >= high_threshold:
+            # High inventory - suggest price decrease
+            decrease_pct = rule_config.get('high_inventory_decrease', 3.0)
+            new_price = self.price * (1 - Decimal(str(decrease_pct)) / 100)
+            
+            return {
+                'rule_name': rule_name,
+                'action': 'decrease_price',
+                'current_price': float(self.price),
+                'suggested_price': float(new_price),
+                'reason': f'High inventory ({self.available_quantity} units)',
+                'confidence': 0.7
+            }
+        
+        return None
+    
+    def get_pricing_insights(self) -> Dict[str, Any]:
+        """Get comprehensive pricing insights and recommendations"""
+        insights = {
+            'current_performance': self.analyze_price_performance(),
+            'ai_recommendations': {},
+            'market_analysis': {},
+            'optimization_opportunities': [],
+            'risk_factors': []
+        }
+        
+        # AI recommendations
+        if self.ai_optimized_price:
+            insights['ai_recommendations'] = {
+                'recommended_price': float(self.ai_optimized_price),
+                'confidence': float(self.prediction_confidence or 0),
+                'potential_lift': self.price_optimization_potential,
+                'model_version': self.ml_model_version
+            }
+        
+        # Market analysis
+        if self.competitor_prices:
+            competitor_analysis = self._analyze_competitor_landscape()
+            insights['market_analysis'] = competitor_analysis
+        
+        # Optimization opportunities
+        rule_suggestions = self.evaluate_price_rules()
+        insights['optimization_opportunities'] = rule_suggestions
+        
+        # Risk factors
+        risk_factors = self._identify_pricing_risks()
+        insights['risk_factors'] = risk_factors
+        
+        return insights
+    
+    def _analyze_competitor_landscape(self) -> Dict[str, Any]:
+        """Analyze competitive landscape"""
+        if not self.competitor_prices:
+            return {}
+        
+        competitor_prices = [float(price) for price in self.competitor_prices.values()]
+        current_price = float(self.price)
+        
+        return {
+            'competitor_count': len(competitor_prices),
+            'price_range': {
+                'min': min(competitor_prices),
+                'max': max(competitor_prices),
+                'average': sum(competitor_prices) / len(competitor_prices)
+            },
+            'position': {
+                'percentile': sum(1 for p in competitor_prices if current_price <= p) / len(competitor_prices) * 100,
+                'rank': sorted(competitor_prices + [current_price]).index(current_price) + 1
+            },
+            'competitive_gap': self.competitive_advantage
+        }
+    
+    def _identify_pricing_risks(self) -> List[Dict[str, Any]]:
+        """Identify potential pricing risks"""
+        risks = []
+        
+        # Margin risk
+        if self.cost_price and self.profit_margin < 10:
+            risks.append({
+                'type': 'low_margin',
+                'severity': 'high' if self.profit_margin < 5 else 'medium',
+                'message': f'Low profit margin: {self.profit_margin:.1f}%',
+                'recommendation': 'Consider increasing price or reducing costs'
+            })
+        
+        # Competitive risk
+        if self.competitive_advantage and self.competitive_advantage < -20:
+            risks.append({
+                'type': 'price_premium',
+                'severity': 'medium',
+                'message': f'Price {abs(self.competitive_advantage):.1f}% above competitors',
+                'recommendation': 'Monitor competitor responses and conversion rates'
+            })
+        
+        # Volatility risk
+        if self.market_volatility_index and self.market_volatility_index > 70:
+            risks.append({
+                'type': 'market_volatility',
+                'severity': 'medium',
+                'message': f'High market volatility: {self.market_volatility_index}',
+                'recommendation': 'Consider more frequent price reviews'
+            })
+        
+        return risks
     
     class Meta:
         abstract = True
-    
-    @property
-    def is_on_sale(self):
-        """Check if item is on sale"""
-        return self.compare_at_price and self.compare_at_price > self.price
-    
-    @property
-    def discount_amount(self):
-        """Calculate discount amount"""
-        if self.is_on_sale:
-            return self.compare_at_price - self.price
-        return Decimal('0.00')
-    
-    @property
-    def discount_percentage(self):
-        """Calculate discount percentage"""
-        if self.is_on_sale and self.compare_at_price > 0:
-            return ((self.compare_at_price - self.price) / self.compare_at_price) * 100
-        return Decimal('0.00')
-    
-    @property
-    def profit_margin(self):
-        """Calculate profit margin percentage"""
-        if self.cost_price and self.price > 0:
-            return ((self.price - self.cost_price) / self.price) * 100
-        return Decimal('0.00')
-    
-    @property
-    def competitive_advantage(self):
-        """Calculate competitive price advantage"""
-        if not self.competitor_prices:
-            return None
         
-        competitor_avg = sum(self.competitor_prices.values()) / len(self.competitor_prices)
-        if competitor_avg > 0:
-            advantage = ((competitor_avg - float(self.price)) / competitor_avg) * 100
-            return round(advantage, 2)
-        return None
-    
-    @property
-    def price_optimization_potential(self):
-        """Calculate potential revenue increase from price optimization"""
-        if not self.ai_optimized_price:
-            return None
-        
-        current_revenue_potential = float(self.price)
-        optimized_revenue_potential = float(self.ai_optimized_price)
-        
-        # Apply elasticity adjustment
-        if self.price_elasticity:
-            price_change_pct = (optimized_revenue_potential - current_revenue_potential) / current_revenue_potential
-            demand_change_pct = float(self.price_elasticity) * price_change_pct
-            optimized_revenue_potential *= (1 + demand_change_pct)
-        
-        potential_increase = ((optimized_revenue_potential - current_revenue_potential) / current_revenue_potential) * 100
-        return round(potential_increase, 2)
-    
-    def record_price_change(self, new_price: Decimal, reason: str = "Manual"):
-        """Record price change in history"""
-        price_change_record = {
-            'timestamp': timezone.now().isoformat(),
-            'old_price': float(self.price),
-            'new_price': float(new_price),
-            'reason': reason,
-            'change_percentage': float(((new_price - self.price) / self.price) * 100) if self.price > 0 else 0
-        }
-        
-        if not self.price_history:
-            self.price_history = []
-        
-        self.price_history.append(price_change_record)
-        
-        # Keep only last 50 price changes
-        self.price_history = self.price_history[-50:]
-        
-        self.price = new_price
-        self.save(update_fields=['price', 'price_history'])
-    
-    def calculate_ai_optimized_price(self) -> Optional[Decimal]:
-        """Calculate AI-optimized price based on multiple factors"""
-        try:
-            base_price = self.price
-            optimized_price = base_price
-            
-            # Market position adjustment
-            market_adjustments = {
-                'PREMIUM': Decimal('1.15'),    # 15% premium
-                'COMPETITIVE': Decimal('1.00'), # No adjustment
-                'ECONOMY': Decimal('0.90'),     # 10% discount
-                'PENETRATION': Decimal('0.80')  # 20% discount
-            }
-            
-            optimized_price *= market_adjustments.get(self.market_position, Decimal('1.00'))
-            
-            # Competitor-based adjustment
-            if self.competitor_prices:
-                competitor_avg = sum(
-                    Decimal(str(price)) for price in self.competitor_prices.values()
-                ) / len(self.competitor_prices)
-                
-                # Adjust towards competitive average
-                competitive_factor = Decimal('0.95')  # Stay slightly below average
-                target_price = competitor_avg * competitive_factor
-                
-                # Blend with current optimization (70% competitive, 30% other factors)
-                optimized_price = (target_price * Decimal('0.7')) + (optimized_price * Decimal('0.3'))
-            
-            # Inventory-based adjustment
-            if hasattr(self, 'available_quantity'):
-                if hasattr(self, 'low_stock_threshold'):
-                    if self.available_quantity <= self.low_stock_threshold:
-                        # Low stock - increase price
-                        optimized_price *= Decimal('1.05')
-                    elif self.available_quantity > self.low_stock_threshold * 5:
-                        # High stock - decrease price
-                        optimized_price *= Decimal('0.98')
-            
-            # Apply inventory price adjustment
-            optimized_price *= self.inventory_price_adjustment
-            
-            # Respect min/max price constraints
-            if self.min_price and optimized_price < self.min_price:
-                optimized_price = self.min_price
-            
-            if self.max_price and optimized_price > self.max_price:
-                optimized_price = self.max_price
-            
-            # Ensure profitable pricing
-            if self.cost_price and optimized_price < self.cost_price * Decimal('1.1'):
-                optimized_price = self.cost_price * Decimal('1.1')  # Minimum 10% markup
-            
-            return optimized_price.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            
-        except Exception as e:
-            logger.error(f"Failed to calculate AI-optimized price: {e}")
-            return None
-    
-    def apply_dynamic_pricing(self) -> bool:
-        """Apply dynamic pricing if enabled"""
-        if not self.enable_dynamic_pricing:
-            return False
-        
-        optimized_price = self.calculate_ai_optimized_price()
-        
-        if optimized_price and abs(optimized_price - self.price) > Decimal('0.01'):
-            # Apply the optimized price
-            old_price = self.price
-            self.record_price_change(optimized_price, "AI Dynamic Pricing")
-            
-            self.ai_optimized_price = optimized_price
-            self.last_price_optimization = timezone.now()
-            self.save(update_fields=['ai_optimized_price', 'last_price_optimization'])
-            
-            logger.info(f"Dynamic pricing applied: {old_price} -> {optimized_price}")
-            return True
-        
-        return False
-    
-    def analyze_price_performance(self) -> Dict[str, Any]:
-        """Analyze pricing performance and provide insights"""
-        performance = {
-            'current_price': float(self.price),
-            'profit_margin': float(self.profit_margin),
-            'competitive_position': self.market_position,
-            'optimization_score': float(self.revenue_optimization_score or 0),
-        }
-        
-        # Price trend analysis
-        if self.price_history and len(self.price_history) >= 2:
-            recent_changes = self.price_history[-5:]  # Last 5 changes
-            price_changes = [change['change_percentage'] for change in recent_changes]
-            
-            performance['price_trend'] = {
-                'average_change': sum(price_changes) / len(price_changes),
-                'volatility': max(price_changes) - min(price_changes),
-                'total_changes': len(self.price_history)
-            }
-        
-        # Competitive analysis
-        if self.competitor_prices:
-            performance['competitive_analysis'] = {
-                'competitor_count': len(self.competitor_prices),
-                'price_advantage': self.competitive_advantage,
-                'market_position_score': self._calculate_market_position_score()
-            }
-        
-        # Optimization potential
-        if self.ai_optimized_price:
-            performance['optimization_potential'] = {
-                'recommended_price': float(self.ai_optimized_price),
-                'potential_improvement': self.price_optimization_potential,
-                'confidence_score': self._calculate_pricing_confidence()
-            }
-        
-        return performance
-    
-    def _calculate_market_position_score(self) -> float:
-        """Calculate market position score"""
-        if not self.competitor_prices:
-            return 50.0  # Neutral score
-        
-        competitor_prices = list(self.competitor_prices.values())
-        competitor_avg = sum(competitor_prices) / len(competitor_prices)
-        
-        price_ratio = float(self.price) / competitor_avg
-        
-        # Score based on price position
-        if price_ratio <= 0.8:
-            return 90.0  # Excellent value position
-        elif price_ratio <= 0.9:
-            return 75.0  # Good value position
-        elif price_ratio <= 1.1:
-            return 60.0  # Competitive position
-        elif price_ratio <= 1.2:
-            return 40.0  # Premium position
-        else:
-            return 20.0  # High premium position
-    
-    def _calculate_pricing_confidence(self) -> float:
-        """Calculate confidence score for pricing recommendations"""
-        confidence = 50.0  # Base confidence
-        
-        # Data quality factors
-        if self.competitor_prices:
-            confidence += min(len(self.competitor_prices) * 5, 20)  # Up to 20 points for competitor data
-        
-        if self.price_history:
-            confidence += min(len(self.price_history) * 2, 15)  # Up to 15 points for price history
-        
-        if self.cost_price:
-            confidence += 10  # 10 points for having cost data
-        
-        if self.price_elasticity:
-            confidence += 5  # 5 points for elasticity data
-        
-        return min(confidence, 95.0)  # Cap at 95%
-
-
 class InventoryMixin(models.Model):
     """Inventory tracking mixin"""
     

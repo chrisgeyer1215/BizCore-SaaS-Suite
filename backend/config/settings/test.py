@@ -2,7 +2,10 @@
 from .base import *
 import tempfile
 
+# Enable testing mode
 DEBUG = False
+ALLOWED_HOSTS = ['*']
+SECRET_KEY = 'test-secret-key-not-for-production'
 TESTING = True
 
 # Use in-memory database for speed
@@ -68,3 +71,13 @@ SECRET_KEY = 'test-secret-key-not-for-production'
 PASSWORD_HASHERS = [
     'django.contrib.auth.hashers.MD5PasswordHasher',  # Fast for tests
 ]
+
+# Disable CSRF for API tests
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.SessionAuthentication',
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
+    'TEST_REQUEST_DEFAULT_FORMAT': 'json',
+}

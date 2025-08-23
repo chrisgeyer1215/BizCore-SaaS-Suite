@@ -21,7 +21,7 @@ import logging
 from .base import (
     EcommerceBaseModel, 
     SEOMixin, 
-    PricingMixin, 
+    AIOptimizedPricingMixin, 
     InventoryMixin, 
     VisibilityMixin, 
     TagMixin,
@@ -32,7 +32,7 @@ from .managers import AIOptimizedProductManager
 logger = logging.getLogger(__name__)
 
 
-class EcommerceProduct(EcommerceBaseModel, SEOMixin, PricingMixin, InventoryMixin, 
+class EcommerceProduct(EcommerceBaseModel, SEOMixin, AIOptimizedPricingMixin, InventoryMixin, 
                       VisibilityMixin, TagMixin, AuditMixin):
     """AI-Powered e-commerce product model with intelligent features and ML capabilities"""
     
@@ -1185,7 +1185,7 @@ class EcommerceProduct(EcommerceBaseModel, SEOMixin, PricingMixin, InventoryMixi
         }
 
 
-class ProductVariant(EcommerceBaseModel, PricingMixin, InventoryMixin, AuditMixin):
+class ProductVariant(EcommerceBaseModel, AIOptimizedPricingMixin, InventoryMixin, AuditMixin):
     """Product variants for products with options"""
     
     # Parent Product
@@ -1430,7 +1430,7 @@ class ProductTag(EcommerceBaseModel):
         super().save(*args, **kwargs)
 
 
-class ProductBundle(EcommerceBaseModel, PricingMixin, VisibilityMixin, SEOMixin):
+class ProductBundle(EcommerceBaseModel, AIOptimizedPricingMixin, VisibilityMixin, SEOMixin):
     """Product bundles - packages of multiple products sold together"""
     
     class BundleType(models.TextChoices):
