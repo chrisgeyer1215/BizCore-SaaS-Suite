@@ -5,7 +5,7 @@ from django.utils.translation import gettext_lazy as _
 
 # Import all admin classes
 from .base import CRMAdminSite, BaseModelAdmin, TenantAwareAdmin
-from .users import CRMUserProfileAdmin, TeamAdmin, TeamMembershipAdmin
+from .user import CRMUserProfileAdmin, TeamAdmin, TeamMembershipAdmin
 from .account import AccountAdmin, ContactAdmin, IndustryAdmin
 from .lead import LeadAdmin, LeadSourceAdmin, LeadScoringRuleAdmin
 from .opportunity import OpportunityAdmin, PipelineAdmin, PipelineStageAdmin

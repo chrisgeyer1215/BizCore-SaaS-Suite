@@ -1,0 +1,290 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}{{ title }}{% endblock %}
+
+{% block extrahead %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    .seo-score {
+        font-size: 3em;
+        font-weight: bold;
+        text-align: center;
+        margin: 20px 0;
+    }
+    .score-excellent { color: #28a745; }
+    .score-good { color: #20c997; }
+    .score-average { color: #ffc107; }
+    .score-poor { color: #dc3545; }
+    
+    .seo-section {
+        background: white;
+        border-radius: 8px;
+        padding: 20px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .issue-high { border-left: 4px solid #dc3545; }
+    .issue-medium { border-left: 4px solid #ffc107; }
+    .issue-low { border-left: 4px solid #17a2b8; }
+    
+    .opportunity-item {
+        background: #f8f9fa;
+        padding: 15px;
+        margin: 10px 0;
+        border-radius: 5px;
+        border-left: 4px solid #007bff;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1>{{ title }}</h1>
+    
+    <!-- SEO Score Overview -->
+    <div class="row">
+        <div class="col-md-4">
+            <div class="seo-section">
+                <div class="seo-score {% if seo_analysis.score >= 90 %}score-excellent{% elif seo_analysis.score >= 70 %}score-good{% elif seo_analysis.score >= 50 %}score-average{% else %}score-poor{% endif %}">
+                    {{ seo_analysis.score }}/100
+                </div>
+                <h4 class="text-center">SEO Score ({{ seo_analysis.grade }})</h4>
+                <p class="text-center text-muted">Based on comprehensive analysis</p>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="seo-section">
+                <h5>Quick Stats</h5>
+                <ul class="list-unstyled">
+                    <li><strong>Issues Found:</strong> {{ seo_analysis.issues|length }}</li>
+                    <li><strong>Recommendations:</strong> {{ seo_analysis.recommendations|length }}</li>
+                    <li><strong>Readability Score:</strong> {{ seo_analysis.readability_score|floatformat:1 }}/100</li>
+                    <li><strong>Keywords Analyzed:</strong> {{ seo_analysis.keyword_density|length }}</li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="col-md-4">
+            <div class="seo-section">
+                <h5>Optimization Actions</h5>
+                <button class="btn btn-primary btn-block mb-2" onclick="applyOptimizations()">
+                    Apply AI Suggestions
+                </button>
+                <button class="btn btn-outline-secondary btn-block mb-2" onclick="exportReport()">
+                    Export Report
+                </button>
+                <button class="btn btn-outline-info btn-block" onclick="runFullAudit()">
+                    Run Full Audit
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- AI Suggestions -->
+    <div class="row">
+        <div class="col-md-6">
+            <div class="seo-section">
+                <h4>🤖 AI-Generated Suggestions</h4>
+                
+                <div class="form-group">
+                    <label><strong>Optimized Title:</strong></label>
+                    <div class="alert alert-info">
+                        <strong>Current:</strong> {{ product.seo_title|default:"Not set" }}<br>
+                        <strong>Suggested:</strong> {{ seo_suggestions.title }}
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label><strong>Optimized Description:</strong></label>
+                    <div class="alert alert-info">
+                        <strong>Current:</strong> {{ product.seo_description|default:"Not set" }}<br>
+                        <strong>Suggested:</strong> {{ seo_suggestions.description }}
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label><strong>Recommended Keywords:</strong></label>
+                    <div class="alert alert-info">
+                        <strong>Current:</strong> {{ product.seo_keywords|default:"Not set" }}<br>
+                        <strong>Suggested:</strong> {{ seo_suggestions.keywords }}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="seo-section">
+                <h4>📊 Keyword Analysis</h4>
+                <canvas id="keywordChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Issues and Recommendations -->
+    <div class="row">
+        <div class="col-md-6">
+            <div class="seo-section">
+                <h4>🚨 Issues Found</h4>
+                {% for issue in seo_analysis.issues %}
+                <div class="alert issue-{{ issue.priority|default:'medium' }}">
+                    <strong>{{ issue.title|default:issue }}</strong>
+                    {% if issue.description %}
+                    <p class="mb-0">{{ issue.description }}</p>
+                    {% endif %}
+                </div>
+                {% empty %}
+                <div class="alert alert-success">
+                    <strong>Great!</strong> No critical SEO issues found.
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div class="col-md-6">
+            <div class="seo-section">
+                <h4>💡 Recommendations</h4>
+                {% for rec in seo_analysis.recommendations %}
+                <div class="alert alert-info">
+                    <strong>{{ rec.title|default:rec }}</strong>
+                    {% if rec.description %}
+                    <p class="mb-0">{{ rec.description }}</p>
+                    {% endif %}
+                </div>
+                {% empty %}
+                <div class="alert alert-success">
+                    <strong>Excellent!</strong> Your SEO is well optimized.
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    
+    <!-- External Audit Results -->
+    {% if external_audit %}
+    <div class="seo-section">
+        <h4>🔍 External SEO Audit Results</h4>
+        <div class="row">
+            <div class="col-md-3">
+                <h6>Performance</h6>
+                <div class="progress">
+                    <div class="progress-bar" style="width: {{ external_audit.performance_score }}%">
+                        {{ external_audit.performance_score }}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <h6>SEO</h6>
+                <div class="progress">
+                    <div class="progress-bar bg-success" style="width: {{ external_audit.seo_score }}%">
+                        {{ external_audit.seo_score }}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <h6>Accessibility</h6>
+                <div class="progress">
+                    <div class="progress-bar bg-info" style="width: {{ external_audit.accessibility_score }}%">
+                        {{ external_audit.accessibility_score }}
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <h6>Best Practices</h6>
+                <div class="progress">
+                    <div class="progress-bar bg-warning" style="width: {{ external_audit.best_practices_score }}%">
+                        {{ external_audit.best_practices_score }}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- Optimization Opportunities -->
+    {% if optimization_opportunities %}
+    <div class="seo-section">
+        <h4>🎯 Optimization Opportunities</h4>
+        {% for opp in optimization_opportunities %}
+        <div class="opportunity-item">
+            <h6>{{ opp.description }}</h6>
+            <p><strong>Current Issue:</strong> {{ opp.current_issue }}</p>
+            <p><strong>Recommendation:</strong> {{ opp.recommendation }}</p>
+            <p><strong>Potential Impact:</strong> +{{ opp.potential_impact }} SEO points</p>
+            <span class="badge badge-{{ opp.priority }}">{{ opp.priority|title }} Priority</span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+
+<script>
+// Initialize keyword density chart
+document.addEventListener('DOMContentLoaded', function() {
+    const ctx = document.getElementById('keywordChart').getContext('2d');
+    
+    const keywordData = {{ seo_analysis.keyword_density|safe }};
+    const labels = Object.keys(keywordData).slice(0, 10);
+    const values = labels.map(label => keywordData[label]);
+    
+    new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label
+                backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                borderColor: 'rgba(54, 162, 235, 1)',
+                borderWidth: 1
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    max: 5
+                }
+            }
+        }
+    });
+});
+
+function applyOptimizations() {
+    if (confirm('Apply AI-generated SEO optimizations to this product?')) {
+        fetch(`/admin/ecommerce/ecommerceproduct/{{ product.id }}/complete-optimization/`, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': '{{ csrf_token }}',
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                apply_seo: true,
+                apply_suggestions: true
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('SEO optimizations applied successfully!');
+                location.reload();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        });
+    }
+}
+
+function exportReport() {
+    window.open(`/admin/ecommerce/export-seo-report/?product_id={{ product.id }}`, '_blank');
+}
+
+function runFullAudit() {
+    alert('Running comprehensive SEO audit...');
+    // This would trigger a full external audit
+}
+</script>
+{% endblock %}

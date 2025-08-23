@@ -1,0 +1,163 @@
+{% extends "admin/base_site.html" %}
+{% load static %}
+
+{% block title %}AI Insights Dashboard{% endblock %}
+
+{% block extrahead %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    .metric-card {
+        background: white;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    .metric-value {
+        font-size: 2.5em;
+        font-weight: bold;
+        color: #2196F3;
+    }
+    .metric-label {
+        color: #666;
+        font-size: 0.9em;
+        margin-top: 5px;
+    }
+    .alert-warning { background-color: #fff3cd; border-color: #ffeaa7; }
+    .alert-info { background-color: #d1ecf1; border-color: #bee5eb; }
+    .recommendation-card {
+        border-left: 4px solid #2196F3;
+        padding: 15px;
+        margin: 10px 0;
+        background: #f8f9fa;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1>AI Insights Dashboard</h1>
+    
+    <!-- AI Performance Metrics -->
+    <div class="row">
+        <div class="col-md-3">
+            <div class="metric-card">
+                <div class="metric-value">{{ ai_metrics.recommendation_accuracy }}%</div>
+                <div class="metric-label">Recommendation Accuracy</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="metric-card">
+                <div class="metric-value">{{ ai_metrics.pricing_accuracy }}%</div>
+                <div class="metric-label">Pricing Accuracy</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="metric-card">
+                <div class="metric-value">{{ ai_metrics.demand_forecast_accuracy }}%</div>
+                <div class="metric-label">Demand Forecast Accuracy</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="metric-card">
+                <div class="metric-value">${{ performance_insights.revenue_impact }}</div>
+                <div class="metric-label">Revenue Impact (%)</div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- AI Recommendations -->
+    <div class="row mt-4">
+        <div class="col-md-8">
+            <h3>AI Recommendations</h3>
+            {% for rec in recommendations %}
+            <div class="recommendation-card">
+                <h5>{{ rec.title }}</h5>
+                <p>{{ rec.description }}</p>
+                <button class="btn btn-primary btn-sm" onclick="executeRecommendation('{{ rec.action }}')">
+                    Take Action
+                </button>
+            </div>
+            {% endfor %}
+        </div>
+        
+        <div class="col-md-4">
+            <h3>AI Alerts</h3>
+            {% for alert in alerts %}
+            <div class="alert alert-{{ alert.level }}">
+                <strong>{{ alert.level|title }}:</strong> {{ alert.message }}
+                {% if alert.action_required %}
+                <br><small>Action required</small>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    
+    <!-- Performance Charts -->
+    <div class="row mt-4">
+        <div class="col-md-6">
+            <div class="metric-card">
+                <h4>AI Model Performance</h4>
+                <canvas id="modelPerformanceChart" height="300"></canvas>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="metric-card">
+                <h4>Revenue Impact Over Time</h4>
+                <canvas id="revenueImpactChart" height="300"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function executeRecommendation(action) {
+    // Implementation for executing AI recommendations
+    alert('Executing: ' + action);
+}
+
+// Initialize charts
+document.addEventListener('DOMContentLoaded', function() {
+    // Model Performance Chart
+    const modelCtx = document.getElementById('modelPerformanceChart').getContext('2d');
+    new Chart(modelCtx, {
+        type: 'radar', 'Pricing', 'Demand Forecast', 'Customer Segmentation', 'Fraud Detection'],
+            datasets: [{
+                label: _metrics.recommendation_accuracy }}, {{ ai_metrics.pricing_accuracy }}, {{ ai_metrics.demand_forecast_accuracy }}, 85, 92],
+                backgroundColor: 'rgba(33, 150, 243, 0.2)',
+                borderColor: 'rgba(33, 150, 243, 1)',
+                pointBackgroundColor: 'rgba(33, 150, 243, 1)'
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                r: {
+                    beginAtZero: true,
+                    max: 100
+                }
+            }
+        }
+    });
+    
+    // Revenue Impact Chart
+    const revenueCtx = document.getElementById('revenueImpactChart').getContext('2d');
+    new Chart(revenueCtx, {
+        labels: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'],
+            datasets: [{
+                .2, 7.8, 12.1, 15.3, 18.7, {{ performance_insights.revenue_impact }}],
+                borderColor: 'rgba(76, 175, 80, 1)',
+                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                tension: 0.4
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false
+        }
+    });
+});
+</script>
+{% endblock %}

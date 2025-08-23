@@ -33,7 +33,7 @@ __all__ = [
     'EcommerceProduct', 'ProductVariant', 'ProductOption', 'ProductOptionValue',
     'ProductImage', 'ProductSEO', 'ProductMetric', 'ProductTag',
     'ProductBundle', 'BundleItem', 'AIProductRecommendation', 'AIProductInsights',
-    'Collection', 'CollectionProduct', 'CollectionRule', 'CollectionImage',
+    'IntelligentCollection', 'CollectionProduct', 'CollectionRule', 'CollectionImage',
     'CollectionSEO', 'CollectionMetrics',
 
     # AI-Powered Cart & Wishlist

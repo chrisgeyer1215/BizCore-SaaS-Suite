@@ -801,3 +801,382 @@ class SystemConfiguration(TenantBaseModel):
         if self.default_value is not None:
             self.value = self.default_value
             self.save()
+
+
+class AuditLog(TenantBaseModel):
+    """Enhanced audit logging system with security focus"""
+    
+    SEVERITY_LEVELS = [
+        ('DEBUG', 'Debug'),
+        ('INFO', 'Information'),
+        ('WARNING', 'Warning'),
+        ('ERROR', 'Error'),
+        ('CRITICAL', 'Critical'),
+        ('SECURITY', 'Security Event'),
+    ]
+    
+    EVENT_CATEGORIES = [
+        ('AUTHENTICATION', 'Authentication'),
+        ('AUTHORIZATION', 'Authorization'),
+        ('DATA_ACCESS', 'Data Access'),
+        ('DATA_MODIFICATION', 'Data Modification'),
+        ('SYSTEM_CHANGE', 'System Configuration Change'),
+        ('USER_MANAGEMENT', 'User Management'),
+        ('INTEGRATION', 'External Integration'),
+        ('EXPORT', 'Data Export'),
+        ('IMPORT', 'Data Import'),
+        ('WORKFLOW', 'Workflow Execution'),
+        ('SECURITY_INCIDENT', 'Security Incident'),
+        ('COMPLIANCE', 'Compliance Event'),
+        ('PERFORMANCE', 'Performance Event'),
+        ('ERROR', 'Error Event'),
+    ]
+    
+    # Event Identification
+    event_id = models.UUIDField(default=uuid.uuid4, unique=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    severity = models.CharField(max_length=10, choices=SEVERITY_LEVELS)
+    category = models.CharField(max_length=20, choices=EVENT_CATEGORIES)
+    
+    # Event Description
+    event_name = models.CharField(max_length=255)
+    event_description = models.TextField()
+    message = models.TextField(blank=True)
+    
+    # User Context
+    user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs'
+    )
+    user_email = models.EmailField(blank=True)
+    impersonated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='impersonated_audit_logs'
+    )
+    
+    # Session Context
+    session_id = models.CharField(max_length=100, blank=True)
+    device_info = models.JSONField(default=dict, blank=True)
+    location_info = models.JSONField(default=dict, blank=True)
+    
+    # Request Context
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    request_method = models.CharField(max_length=10, blank=True)
+    request_url = models.URLField(blank=True)
+    request_headers = models.JSONField(default=dict, blank=True)
+    response_status = models.IntegerField(null=True, blank=True)
+    
+    # Entity Context
+    entity_type = models.CharField(max_length=100, blank=True)
+    entity_id = models.CharField(max_length=36, blank=True)
+    entity_name = models.CharField(max_length=255, blank=True)
+    parent_entity_type = models.CharField(max_length=100, blank=True)
+    parent_entity_id = models.CharField(max_length=36, blank=True)
+    
+    # Change Details
+    action_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('CREATE', 'Create'),
+            ('READ', 'Read'),
+            ('UPDATE', 'Update'),
+            ('DELETE', 'Delete'),
+            ('LOGIN', 'Login'),
+            ('LOGOUT', 'Logout'),
+            ('EXPORT', 'Export'),
+            ('IMPORT', 'Import'),
+            ('APPROVE', 'Approve'),
+            ('REJECT', 'Reject'),
+            ('SEND', 'Send'),
+            ('RECEIVE', 'Receive'),
+            ('EXECUTE', 'Execute'),
+            ('ACCESS', 'Access'),
+            ('DOWNLOAD', 'Download'),
+            ('UPLOAD', 'Upload'),
+            ('SHARE', 'Share'),
+            ('ARCHIVE', 'Archive'),
+            ('RESTORE', 'Restore'),
+        ],
+        blank=True
+    )
+    
+    old_values = models.JSONField(null=True, blank=True)
+    new_values = models.JSONField(null=True, blank=True)
+    changed_fields = models.JSONField(default=list, blank=True)
+    
+    # Security Context
+    risk_score = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+    threat_indicators = models.JSONField(default=list, blank=True)
+    security_tags = models.JSONField(default=list, blank=True)
+    is_suspicious = models.BooleanField(default=False)
+    requires_investigation = models.BooleanField(default=False)
+    
+    # Compliance Context
+    compliance_frameworks = models.JSONField(default=list, blank=True)  # GDPR, SOX, etc.
+    data_classification = models.CharField(
+        max_length=20,
+        choices=[
+            ('PUBLIC', 'Public'),
+            ('INTERNAL', 'Internal'),
+            ('CONFIDENTIAL', 'Confidential'),
+            ('RESTRICTED', 'Restricted'),
+            ('PII', 'Personally Identifiable Information'),
+            ('PHI', 'Protected Health Information'),
+        ],
+        blank=True
+    )
+    retention_period_days = models.IntegerField(default=2555)  # 7 years default
+    
+    # Additional Context
+    business_process = models.CharField(max_length=100, blank=True)
+    workflow_id = models.CharField(max_length=36, blank=True)
+    correlation_id = models.CharField(max_length=100, blank=True)
+    trace_id = models.CharField(max_length=100, blank=True)
+    
+    # Metadata and Tags
+    metadata = models.JSONField(default=dict, blank=True)
+    tags = models.JSONField(default=list, blank=True)
+    custom_fields = models.JSONField(default=dict, blank=True)
+    
+    # Performance Metrics
+    execution_time_ms = models.IntegerField(null=True, blank=True)
+    memory_usage_mb = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        null=True, 
+        blank=True
+    )
+    
+    # Error Context
+    error_code = models.CharField(max_length=50, blank=True)
+    error_message = models.TextField(blank=True)
+    error_stack_trace = models.TextField(blank=True)
+    
+    # Investigation and Response
+    investigation_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('NONE', 'No Investigation Required'),
+            ('PENDING', 'Investigation Pending'),
+            ('IN_PROGRESS', 'Investigation In Progress'),
+            ('RESOLVED', 'Investigation Resolved'),
+            ('ESCALATED', 'Escalated'),
+        ],
+        default='NONE'
+    )
+    assigned_investigator = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_investigations'
+    )
+    investigation_notes = models.TextField(blank=True)
+    resolution_details = models.TextField(blank=True)
+    
+    # Alert Configuration
+    alert_sent = models.BooleanField(default=False)
+    alert_recipients = models.JSONField(default=list, blank=True)
+    alert_timestamp = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['tenant', 'timestamp']),
+            models.Index(fields=['tenant', 'severity']),
+            models.Index(fields=['tenant', 'category']),
+            models.Index(fields=['tenant', 'user']),
+            models.Index(fields=['tenant', 'entity_type', 'entity_id']),
+            models.Index(fields=['tenant', 'action_type']),
+            models.Index(fields=['tenant', 'is_suspicious']),
+            models.Index(fields=['tenant', 'requires_investigation']),
+            models.Index(fields=['tenant', 'investigation_status']),
+            models.Index(fields=['tenant', 'risk_score']),
+            models.Index(fields=['event_id']),
+            models.Index(fields=['correlation_id']),
+            models.Index(fields=['ip_address']),
+        ]
+        
+    def __str__(self):
+        user_display = self.user.get_full_name() if self.user else self.user_email or 'System'
+        return f'[{self.severity}] {self.event_name} by {user_display}'
+    
+    def save(self, *args, **kwargs):
+        # Auto-populate user email if user is present
+        if self.user and not self.user_email:
+            self.user_email = self.user.email
+            
+        # Auto-calculate risk score based on severity and category
+        if not self.risk_score:
+            self.risk_score = self._calculate_risk_score()
+            
+        # Auto-set investigation requirement based on risk score
+        if self.risk_score >= 80 or self.severity in ['CRITICAL', 'SECURITY']:
+            self.requires_investigation = True
+            
+        super().save(*args, **kwargs)
+    
+    def _calculate_risk_score(self):
+        """Calculate risk score based on event characteristics"""
+        score = 0
+        
+        # Base score from severity
+        severity_scores = {
+            'DEBUG': 5,
+            'INFO': 10,
+            'WARNING': 30,
+            'ERROR': 50,
+            'CRITICAL': 80,
+            'SECURITY': 90
+        }
+        score += severity_scores.get(self.severity, 0)
+        
+        # Additional score from category
+        high_risk_categories = [
+            'SECURITY_INCIDENT', 'AUTHENTICATION', 'AUTHORIZATION',
+            'DATA_MODIFICATION', 'USER_MANAGEMENT', 'SYSTEM_CHANGE'
+        ]
+        if self.category in high_risk_categories:
+            score += 20
+            
+        # Check for suspicious indicators
+        if self.threat_indicators:
+            score += min(len(self.threat_indicators) * 10, 30)
+            
+        return min(score, 100)
+    
+    @classmethod
+    def log_event(cls, tenant, event_name, category, severity='INFO', 
+                  user=None, entity_type=None, entity_id=None, 
+                  action_type=None, old_values=None, new_values=None,
+                  request=None, metadata=None, **kwargs):
+        """Convenience method to create audit log entries"""
+        
+        # Extract request context if available
+        request_data = {}
+        if request:
+            request_data.update({
+                'ip_address': request.META.get('REMOTE_ADDR'),
+                'user_agent': request.META.get('HTTP_USER_AGENT', ''),
+                'request_method': request.method,
+                'request_url': request.build_absolute_uri(),
+                'session_id': request.session.session_key,
+            })
+        
+        # Create the audit log entry
+        return cls.objects.create(
+            tenant=tenant,
+            event_name=event_name,
+            category=category,
+            severity=severity,
+            user=user,
+            entity_type=entity_type or '',
+            entity_id=str(entity_id) if entity_id else '',
+            action_type=action_type or '',
+            old_values=old_values,
+            new_values=new_values,
+            metadata=metadata or {},
+            **request_data,
+            **kwargs
+        )
+    
+    def mark_as_investigated(self, investigator, notes='', resolution=''):
+        """Mark event as investigated"""
+        self.investigation_status = 'RESOLVED'
+        self.assigned_investigator = investigator
+        self.investigation_notes = notes
+        self.resolution_details = resolution
+        self.save()
+    
+    def escalate_investigation(self, investigator):
+        """Escalate investigation to higher level"""
+        self.investigation_status = 'ESCALATED'
+        self.assigned_investigator = investigator
+        self.save()
+    
+    def send_alert(self, recipients=None):
+        """Send alert for this audit event"""
+        if not self.alert_sent:
+            # Implementation would depend on notification system
+            # This is a placeholder for actual alert logic
+            self.alert_sent = True
+            self.alert_timestamp = timezone.now()
+            if recipients:
+                self.alert_recipients = recipients
+            self.save()
+    
+    def add_threat_indicator(self, indicator_type, details):
+        """Add a threat indicator to this event"""
+        if not isinstance(self.threat_indicators, list):
+            self.threat_indicators = []
+            
+        self.threat_indicators.append({
+            'type': indicator_type,
+            'details': details,
+            'detected_at': timezone.now().isoformat()
+        })
+        
+        # Recalculate risk score
+        self.risk_score = self._calculate_risk_score()
+        
+        # Mark as suspicious if risk score is high
+        if self.risk_score >= 70:
+            self.is_suspicious = True
+            
+        self.save()
+    
+    def get_related_events(self, time_window_minutes=60):
+        """Get related events within a time window"""
+        time_range_start = self.timestamp - timezone.timedelta(minutes=time_window_minutes)
+        time_range_end = self.timestamp + timezone.timedelta(minutes=time_window_minutes)
+        
+        filters = models.Q(tenant=self.tenant) & \
+                 models.Q(timestamp__gte=time_range_start) & \
+                 models.Q(timestamp__lte=time_range_end)
+        
+        # Same user or IP address
+        if self.user:
+            filters &= models.Q(user=self.user)
+        elif self.ip_address:
+            filters &= models.Q(ip_address=self.ip_address)
+            
+        return self.__class__.objects.filter(filters).exclude(pk=self.pk)
+    
+    def is_anomalous_activity(self):
+        """Detect if this event represents anomalous activity"""
+        # Check for unusual patterns
+        anomaly_indicators = []
+        
+        # Multiple failed login attempts
+        if self.action_type == 'LOGIN' and self.response_status >= 400:
+            recent_failures = self.get_related_events(5).filter(
+                action_type='LOGIN',
+                response_status__gte=400
+            ).count()
+            if recent_failures >= 3:
+                anomaly_indicators.append('Multiple failed login attempts')
+        
+        # Unusual access time
+        if self.timestamp.hour < 6 or self.timestamp.hour > 22:
+            anomaly_indicators.append('Access outside business hours')
+        
+        # High-value data access
+        if self.data_classification in ['CONFIDENTIAL', 'RESTRICTED', 'PII', 'PHI']:
+            anomaly_indicators.append('Access to sensitive data')
+        
+        # Update threat indicators if anomalies detected
+        if anomaly_indicators:
+            for indicator in anomaly_indicators:
+                self.add_threat_indicator('ANOMALY', indicator)
+        
+        return len(anomaly_indicators) > 0

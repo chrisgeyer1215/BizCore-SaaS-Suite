@@ -1,0 +1,462 @@
+<!-- Real-time Dashboard with WebSocket Integration -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>E-commerce Dashboard - Real Time</title>
+    
+    <!-- Chart.js for real-time charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    
+    <!-- Alpine.js for reactive UI -->
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        .metric-card {
+            transition: all 0.3s ease;
+        }
+        .metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+        }
+        .pulse-animation {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .trend-up { color: #10B981; }
+        .trend-down { color: #EF4444; }
+        .trend-neutral { color: #6B7280; }
+    </style>
+</head>
+
+<body class="bg-gray-50">
+    <div x-data="dashboardApp()" x-init="initDashboard()" class="min-h-screen">
+        
+        <!-- Header -->
+        <header class="bg-white shadow-sm border-b">
+            <div class="px-6 py-4">
+                <div class="flex items-center justify-between">
+                    <h1 class="text-2xl font-bold text-gray-900">Real-time Dashboard</h1>
+                    
+                    <!-- Live Status Indicator -->
+                    <div class="flex items-center space-x-4">
+                        <div class="flex items-center space-x-2">
+                            <div :class="isConnected ? 'bg-green-500 pulse-animation' : 'bg-red-500'" 
+                                 class="w-3 h-3 rounded-full"></div>
+                            <span class="text-sm text-gray-600" x-text="isConnected ? 'Live' : 'Disconnected'"></span>
+                        </div>
+                        
+                        <div class="text-sm text-gray-500">
+                            Last updated: <span x-text="formatTime(lastUpdated)"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Dashboard Grid -->
+        <div class="p-6 space-y-6">
+            
+            <!-- Key Metrics Row -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                
+                <!-- Current Visitors -->
+                <div class="metric-card bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Current Visitors</p>
+                            <p class="text-3xl font-bold text-gray-900" x-text="metrics.current_visitors"></p>
+                        </div>
+                        <div class="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-center">
+                        <span :class="getTrendClass(metrics.visitors_trend)" class="text-sm font-medium">
+                            <span x-text="metrics.visitors_trend > 0 ? '+' : ''"></span><span x-text="metrics.visitors_trend"></span>%
+                        </span>
+                        <span class="text-sm text-gray-500 ml-1">vs last hour</span>
+                    </div>
+                </div>
+
+                <!-- Orders Today -->
+                <div class="metric-card bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Orders Today</p>
+                            <p class="text-3xl font-bold text-gray-900" x-text="metrics.orders_today"></p>
+                        </div>
+                        <div class="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-center">
+                        <span :class="getTrendClass(metrics.orders_trend)" class="text-sm font-medium">
+                            <span x-text="metrics.orders_trend > 0 ? '+' : ''"></span><span x-text="metrics.orders_trend"></span>%
+                        </span>
+                        <span class="text-sm text-gray-500 ml-1">vs yesterday</span>
+                    </div>
+                </div>
+
+                <!-- Revenue Today -->
+                <div class="metric-card bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Revenue Today</p>
+                            <p class="text-3xl font-bold text-gray-900" x-text="formatCurrency(metrics.revenue_today)"></p>
+                        </div>
+                        <div class="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-center">
+                        <span :class="getTrendClass(metrics.revenue_trend)" class="text-sm font-medium">
+                            <span x-text="metrics.revenue_trend > 0 ? '+' : ''"></span><span x-text="metrics.revenue_trend"></span>%
+                        </span>
+                        <span class="text-sm text-gray-500 ml-1">vs yesterday</span>
+                    </div>
+                </div>
+
+                <!-- Conversion Rate -->
+                <div class="metric-card bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Conversion Rate</p>
+                            <p class="text-3xl font-bold text-gray-900" x-text="metrics.conversion_rate + '%'"></p>
+                        </div>
+                        <div class="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center">
+                            <svg class="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="mt-4 flex items-center">
+                        <span :class="getTrendClass(metrics.conversion_trend)" class="text-sm font-medium">
+                            <span x-text="metrics.conversion_trend > 0 ? '+' : ''"></span><span x-text="metrics.conversion_trend"></span>%
+                        </span>
+                        <span class="text-sm text-gray-500 ml-1">vs last week</span>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Charts Row -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                
+                <!-- Sales Chart -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="text-lg font-semibold text-gray-900">Sales Over Time</h3>
+                        <select x-model="salesTimeframe" @change="updateSalesChart()" 
+                                class="text-sm border-gray-300 rounded-md">
+                            <option value="1h">Last Hour</option>
+                            <option value="24h">Last 24 Hours</option>
+                            <option value="7d">Last 7 Days</option>
+                        </select>
+                    </div>
+                    <div class="h-64">
+                        <canvas id="salesChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Traffic Sources -->
+                <div class="bg-white rounded-lg shadow p-6">
+                    <h3 class="text-lg font-semibold text-gray-900 mb-4">Traffic Sources</h3>
+                    <div class="h-64">
+                        <canvas id="trafficChart"></canvas>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Activity Feed and Alerts -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                
+                <!-- Live Activity Feed -->
+                <div class="lg:col-span-2 bg-white rounded-lg shadow">
+                    <div class="p-6 border-b border-gray-200">
+                        <h3 class="text-lg font-semibold text-gray-900">Live Activity</h3>
+                    </div>
+                    <div class="p-6 space-y-4 max-h-96 overflow-y-auto">
+                        <template x-for="activity in activityFeed" :key="activity.id">
+                            <div class="flex items-start space-x-3 p-3 rounded-lg hover:bg-gray-50">
+                                <div :class="getActivityIconClass(activity.type)" 
+                                     class="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0">
+                                    <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                        <path x-show="activity.type === 'order'" d="M3 1a1 1 0 000 2h1.22l.305 1.222a.997.997 0 00.01.042l1.358 5.43-.893.892C3.74 11.846 4.632 14 6.414 14H15a1 1 0 000-2H6.414l1-1H14a1 1 0 00.894-.553l3-6A1 1 0 0017 3H6.28l-.31-1.243A1 1 0 005 1H3z"></path>
+                                    </svg>
+                                </div>
+                                <div class="flex-1 min-w-0">
+                                    <p class="text-sm font-medium text-gray-900" x-text="activity.message"></p>
+                                    <p class="text-xs text-gray-500" x-text="formatTimeAgo(activity.timestamp)"></p>
+                                </div>
+                                <div x-show="activity.importance === 'high'" 
+                                     class="w-2 h-2 bg-red-500 rounded-full flex-shrink-0"></div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Alerts and AI Insights -->
+                <div class="space-y-6">
+                    
+                    <!-- Performance Alerts -->
+                    <div class="bg-white rounded-lg shadow">
+                        <div class="p-6 border-b border-gray-200">
+                            <h3 class="text-lg font-semibold text-gray-900">Alerts</h3>
+                        </div>
+                        <div class="p-4 space-y-3">
+                            <template x-for="alert in alerts" :key="alert.id">
+                                <div :class="getAlertClass(alert.severity)" 
+                                     class="p-3 rounded-lg border-l-4">
+                                    <div class="flex items-start justify-between">
+                                        <div class="flex-1">
+                                            <p class="text-sm font-medium" x-text="alert.message"></p>
+                                            <p class="text-xs text-gray-600 mt-1" x-text="alert.recommended_action"></p>
+                                        </div>
+                                        <button class="text-gray-400 hover:text-gray-600 ml-2">
+                                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+                                            </svg>
+                                        </button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- AI Insights -->
+                    <div class="bg-white rounded-lg shadow">
+                        <div class="p-6 border-b border-gray-200">
+                            <h3 class="text-lg font-semibold text-gray-900">AI Insights</h3>
+                        </div>
+                        <div class="p-4 space-y-3">
+                            <div class="p-3 bg-blue-50 rounded-lg">
+                                <p class="text-sm font-medium text-blue-900">Demand Prediction</p>
+                                <p class="text-xs text-blue-700 mt-1" x-text="`${aiInsights.demand_predictions.next_hour_orders} orders expected in next hour`"></p>
+                            </div>
+                            <div class="p-3 bg-green-50 rounded-lg">
+                                <p class="text-sm font-medium text-green-900">Revenue Opportunity</p>
+                                <p class="text-xs text-green-700 mt-1" x-text="`$${aiInsights.pricing_opportunities.potential_revenue_increase} potential increase`"></p>
+                            </div>
+                            <div class="p-3 bg-yellow-50 rounded-lg">
+                                <p class="text-sm font-medium text-yellow-900">Cart Recovery</p>
+                                <p class="text-xs text-yellow-700 mt-1" x-text="`${aiInsights.customer_behavior.abandonment_risk_carts} carts at risk`"></p>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+    <script>
+        function dashboardApp() {
+            return {
+                // Data properties
+                isConnected: false,
+                lastUpdated: new Date(),
+                salesTimeframe: '24h',
+                
+                // Dashboard data
+                metrics: {
+                    current_visitors: 0,
+                    visitors_trend: 0,
+                    orders_today: 0,
+                    orders_trend: 0,
+                    revenue_today: 0,
+                    revenue_trend: 0,
+                    conversion_rate: 0,
+                    conversion_trend: 0
+                },
+                
+                activityFeed: [],
+                alerts: [],
+                aiInsights: {},
+                
+                // Charts
+                salesChart: null,
+                trafficChart: null,
+                
+                // Initialization
+                initDashboard() {
+                    this.connectWebSocket();
+                    this.loadInitialData();
+                    this.initCharts();
+                    this.startPeriodicUpdates();
+                },
+                
+                // WebSocket connection
+                connectWebSocket() {
+                    // In a real implementation, this would connect to a WebSocket
+                    this.isConnected = true;
+                    console.log('WebSocket connected (simulated)');
+                },
+                
+                // Load initial dashboard data
+                async loadInitialData() {
+                    try {
+                        const response = await fetch('/api/v1/analytics/realtime-dashboard/');
+                        const data = await response.json();
+                        
+                        this.metrics = data.metrics;
+                        this.activityFeed = data.activity_feed;
+                        this.alerts = data.alerts;
+                        this.aiInsights = data.ai_insights;
+                        this.lastUpdated = new Date();
+                        
+                    } catch (error) {
+                        console.error('Failed to loa
+                    }
+                },
+                
+                // Initialize charts
+                initCharts() {
+                    // Sales Chart
+                    const salesCtx = document.getElementById('salesChart').getContext('2d');
+                    this.salesChart = new Chart(salesCtx, {
+                        type: '            datasets: [{
+                                label: 'Sales',
+                                : 'rgb(59, 130, 246)',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                tension: 0.4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true
+                                }
+                            }
+                        }
+                    });
+                    
+                    // Traffic Chart
+                    const trafficCtx = document.getElementById('trafficChart').getContext('2d');
+                    this.trafficChart = new Chart(trafficCtx, {
+                        type: {
+                            labels: ['Direct', 'Search', 'Social', 'Email', 'Referral'],
+                            datasets: [{, 25, 20, 12, 8],
+                                backgroundColor: [
+                                    'rgb(59, 130, 246)',
+                                    'rgb(16, 185, 129)',
+                                    'rgb(245, 158, 11)',
+                                    'rgb(239, 68, 68)',
+                                    'rgb(139, 92, 246)'
+                                ]
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false
+                        }
+                    });
+                },
+                
+                // Start periodic updates
+                startPeriodicUpdates() {
+                    // Update every 30 seconds
+                    setInterval(() => {
+                        this.loadInitialData();
+                    }, 30000);
+                    
+                    // Update charts every 5 seconds
+                    setInterval(() => {
+                        this.updateCharts();
+                    }, 5000);
+                },
+                
+                // Update charts with new data
+                async updateCharts() {
+                    try {
+                        const response = await fetch(`/api/v1/analytics/live-stream/?stream=sales&interval=5`);
+                        const data = await response.json();
+                        
+                        // Update sales chart
+                        if (this.salesChart && data.data.orders_per_minute) {
+                            this.salesChart.data.labels = data.data.orders_per_minute.map(item => 
+                                new Date(item.minute).toLocaleTimeString()
+                            );
+                            this.salesChart.data.datasets[0].data = data.data.orders_per_minute.map(item => item.count);
+                            this.salesChart.update('none'); // Update without animation for real-time
+                        }
+                        
+                    } catch (error) {
+                        console.error('Failed to update charts:', error);
+                    }
+                },
+                
+                // Utility methods
+                formatCurrency(amount) {
+                    return new Intl.NumberFormat('en-US', {
+                        style: 'currency',
+                        currency: 'USD'
+                    }).format(amount);
+                },
+                
+                formatTime(date) {
+                    return new Date(date).toLocaleTimeString();
+                },
+                
+                formatTimeAgo(date) {
+                    const now = new Date();
+                    const diffInMinutes = Math.floor((now - new Date(date)) / 60000);
+                    
+                    if (diffInMinutes < 1) return 'Just now';
+                    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+                    
+                    const diffInHours = Math.floor(diffInMinutes / 60);
+                    if (diffInHours < 24) return `${diffInHours}h ago`;
+                    
+                    return new Date(date).toLocaleDateString();
+                },
+                
+                getTrendClass(trend) {
+                    if (trend > 0) return 'trend-up';
+                    if (trend < 0) return 'trend-down';
+                    return 'trend-neutral';
+                },
+                
+                getActivityIconClass(type) {
+                    const classes = {
+                        'order_placed': 'bg-green-100 text-green-600',
+                        'product_viewed': 'bg-blue-100 text-blue-600',
+                        'inventory_alert': 'bg-red-100 text-red-600',
+                        'customer_registered': 'bg-purple-100 text-purple-600'
+                    };
+                    return classes[type] || 'bg-gray-100 text-gray-600';
+                },
+                
+                getAlertClass(severity) {
+                    const classes = {
+                        'urgent': 'bg-red-50 border-red-400 text-red-800',
+                        'warning': 'bg-yellow-50 border-yellow-400 text-yellow-800',
+                        'info': 'bg-blue-50 border-blue-400 text-blue-800'
+                    };
+                    return classes[severity] || 'bg-gray-50 border-gray-400 text-gray-800';
+                }
+            }
+        }
+    </script>
+</body>
+</html>

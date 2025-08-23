@@ -20,7 +20,7 @@ from .models import (
     ProductImage, ProductTag, ProductBundle, BundleItem,
     
     # Collections
-    Collection, CollectionProduct, CollectionRule,
+    IntelligentCollection, CollectionProduct, CollectionRule,
     
     # Cart & Wishlist
     Cart, CartItem, Wishlist, WishlistItem, SavedForLater,
